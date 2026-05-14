@@ -1,7 +1,19 @@
 import postgres from 'postgres';
 
-// Connect as postgres (superuser) to grant BYPASSRLS and full privileges to gbrain user
-const sql = postgres('postgres://postgres:y86kKGJX8Tda27FRZWeuAtR+@34.57.122.49:5432/gbrain', {
+// Connect as postgres (superuser) to grant BYPASSRLS and full privileges to gbrain user.
+// Reads the admin connection string from POSTGRES_ADMIN_URL so credentials are never
+// committed. Example (PowerShell):
+//   $env:POSTGRES_ADMIN_URL = "postgres://postgres:PASSWORD@HOST:5432/gbrain?sslmode=require"
+//   bun run scripts/grant-privileges.ts
+//   Remove-Item Env:POSTGRES_ADMIN_URL
+const adminUrl = process.env.POSTGRES_ADMIN_URL;
+if (!adminUrl) {
+  console.error('Error: POSTGRES_ADMIN_URL env var is required.');
+  console.error('Set it to the postgres-role connection string before running this script.');
+  process.exit(1);
+}
+
+const sql = postgres(adminUrl, {
   ssl: 'require',
   max: 1,
   connect_timeout: 30,

@@ -33,5 +33,8 @@ COPY --from=builder /app/admin/dist /app/admin/dist
 ENV PORT=8787
 EXPOSE 8787
 
-# Command to run the remote HTTP server
+# Run the HTTP server. Migrations are NOT run here — see DEPLOY.md.
+# Migration v24 (RLS backfill) requires BYPASSRLS, which the runtime gbrain
+# role intentionally lacks. Migrations are run from a workstation against the
+# DB as the postgres (or another BYPASSRLS) role before each deploy.
 CMD ["gbrain", "serve", "--http", "--port", "8787"]
