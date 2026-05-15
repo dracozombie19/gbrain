@@ -37,4 +37,10 @@ EXPOSE 8787
 # Migration v24 (RLS backfill) requires BYPASSRLS, which the runtime gbrain
 # role intentionally lacks. Migrations are run from a workstation against the
 # DB as the postgres (or another BYPASSRLS) role before each deploy.
-CMD ["gbrain", "serve", "--http", "--port", "8787"]
+#
+# GBRAIN_HTTP_PUBLIC_URL is consumed here (not by gbrain itself, until the
+# upstream PR adding env-var fallback lands). Without it, the OAuth discovery
+# doc advertises http://localhost:8787 as the issuer and every standard MCP
+# client breaks. The ${VAR:+...} expansion keeps local `docker run` clean
+# when the var is unset. `exec` preserves PID 1 for proper signal handling.
+CMD ["/bin/sh", "-c", "exec gbrain serve --http --port 8787 ${GBRAIN_HTTP_PUBLIC_URL:+--public-url \"$GBRAIN_HTTP_PUBLIC_URL\"}"]
