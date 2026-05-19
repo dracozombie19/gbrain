@@ -46,7 +46,7 @@ def _pending_review_content(
         f"bee_conversation_id: \"{conv_id}\"\n"
         f"bee_conversation_date: \"{conv_date}\"\n"
         f"---\n"
-        f"**Proposed person**: {proposed}  \n"
+        f"**Proposed entity** ({extraction.entity_type}): {proposed}  \n"
         f"**Fact**: {extraction.fact}  \n"
         f"**Confidence reason**: {extraction.attribution_reasoning}  \n"
         f"**Snippet**: > {extraction.transcript_snippet}\n"
@@ -166,7 +166,7 @@ class Orchestrator:
         idx: int,
         summary: RunSummary,
     ) -> None:
-        resolve = self._resolver.resolve(ext.subject_name)
+        resolve = self._resolver.resolve(ext.subject_name, ext.entity_type)
 
         high_confidence = (
             ext.attribution_confidence == "high"

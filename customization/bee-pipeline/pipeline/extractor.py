@@ -14,10 +14,18 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 You are a fact extraction assistant. You will be given a transcript of an ambient conversation \
-recorded via a wearable device. Your task is to extract durable, biographical facts about \
-people mentioned in the conversation.
+recorded via a wearable device. Your task is to extract durable facts about people, pets, \
+companies, and technologies mentioned in the conversation.
 
-DURABLE facts to extract:
+ENTITY TYPES — every extraction must include an entity_type field:
+- "person": an individual human
+- "pet": a household animal
+- "company": an organization, vendor, employer, or institution
+- "technology": a tool, platform, software, or service actively in use
+
+DURABLE facts to extract by entity type:
+
+person:
 - Biographical facts: birthdays, relationships, occupations, where someone lives
 - Health facts: allergies, medical conditions, dietary restrictions
 - Food preferences and dislikes (restaurants, cuisines, specific foods they love or hate)
@@ -26,6 +34,23 @@ DURABLE facts to extract:
 - Worldview and values: religious beliefs, deeply held convictions, identity-level opinions
 - Opinions on topics (politics, culture, ideas) that reveal character or persistent beliefs
 - Relationship context: how people know each other
+
+pet:
+- Species, breed, age, health conditions, dietary needs
+- Behavioral traits and preferences
+
+company:
+- What the company does or provides ("Ascendian provides managed IT services")
+- Vendor/partner relationships ("Schreiber Foods is transitioning from TCS to Ascendian")
+- Company capabilities or specializations ("ArtheaTech specializes in SAP support")
+- subject_name: use the company or organization name (e.g. "Ascendian", "AWS")
+- SKIP: contract values, project timelines, quarterly targets
+
+technology:
+- Tools, platforms, or services actively in use ("Zac's team uses AWS Bedrock for LLM inference")
+- Organizational deployments ("GitHub Copilot is deployed for the dev team")
+- subject_name: use the technology name (e.g. "AWS Bedrock", "DynamoDB", "GitHub Copilot")
+- SKIP: technologies merely mentioned, evaluated, or discussed but not actively in use
 
 SITUATIONAL facts to SKIP (do not extract):
 - Project timelines, meeting logistics, task assignments
@@ -52,7 +77,8 @@ If no durable facts are present, return an empty array [].
 Each extraction object must have exactly these fields:
 {
   "fact": "string — the durable fact in clear, timeless language",
-  "subject_name": "string — the person's name as spoken (e.g. 'Ashley', 'Ella', 'my wife')",
+  "subject_name": "string — the entity's name as spoken (e.g. 'Ashley', 'Ascendian', 'AWS Bedrock')",
+  "entity_type": "person | pet | company | technology",
   "attribution_confidence": "high | medium | low",
   "attribution_reasoning": "string — brief explanation of why you assigned this confidence",
   "name_ambiguous": true | false,
@@ -64,8 +90,8 @@ attribution_confidence levels:
 - medium: likely correct but some inference required
 - low: inferred or uncertain attribution
 
-name_ambiguous: true if the name as spoken could plausibly match more than one person \
-in a typical family/social context (e.g. pronouns, very common first names used without context).
+name_ambiguous: true if the name as spoken could plausibly match more than one entity \
+in context (e.g. pronouns, very common first names, generic terms like "the vendor").
 
 Return ONLY valid JSON — no markdown fences, no explanation text, just the array."""
 
@@ -74,6 +100,7 @@ Return ONLY valid JSON — no markdown fences, no explanation text, just the arr
 class Extraction:
     fact: str
     subject_name: str
+    entity_type: str             # "person" | "pet" | "company" | "technology"
     attribution_confidence: str  # "high" | "medium" | "low"
     attribution_reasoning: str
     name_ambiguous: bool
@@ -111,6 +138,7 @@ def _parse_response(text: str) -> list[Extraction]:
             extractions.append(Extraction(
                 fact=str(item["fact"]),
                 subject_name=str(item["subject_name"]),
+                entity_type=str(item.get("entity_type", "person")),
                 attribution_confidence=str(item.get("attribution_confidence", "low")),
                 attribution_reasoning=str(item.get("attribution_reasoning", "")),
                 name_ambiguous=bool(item.get("name_ambiguous", True)),

@@ -38,10 +38,17 @@ _VAGUE_REFERENCES = {
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
-def _name_to_candidate_slug(name: str) -> str:
+def _name_to_candidate_slug(name: str, entity_type: str = "person") -> str:
     normalized = name.lower().strip()
     parts = _SLUG_RE.sub("-", normalized).strip("-")
-    return f"people/{parts}"
+    prefix_map = {
+        "person": "people",
+        "pet": "pets",
+        "company": "companies",
+        "technology": "tech",
+    }
+    prefix = prefix_map.get(entity_type, "people")
+    return f"{prefix}/{parts}"
 
 
 @dataclass
@@ -80,6 +87,14 @@ class Resolver:
                 slugs_seen.add(slug)
                 self._load_slug(slug)
 
+        # Technology pages are stored as type "concept" with tag "technology"
+        tech_pages = self._brain.list_pages(tag="technology", limit=500)
+        for summary in tech_pages:
+            slug = summary.get("slug")
+            if slug and slug not in slugs_seen:
+                slugs_seen.add(slug)
+                self._load_slug(slug)
+
         logger.info(
             "Resolver loaded: %d alias entries, %d title entries across %d entity pages",
             len(self._alias_map),
@@ -115,7 +130,7 @@ class Resolver:
                 else:
                     self._alias_map[key] = slug
 
-    def resolve(self, spoken_name: str) -> ResolveResult:
+    def resolve(self, spoken_name: str, entity_type: str = "person") -> ResolveResult:
         """Resolve a spoken name to a Brain slug."""
         if not spoken_name or not spoken_name.strip():
             return ResolveResult(slug=None, confidence="pending")
@@ -136,8 +151,8 @@ class Resolver:
             logger.debug("Title match: '%s' → %s", spoken_name, slug)
             return ResolveResult(slug=slug, confidence="medium")
 
-        candidate = _name_to_candidate_slug(spoken_name)
-        logger.debug("Unknown name '%s' → pending (candidate: %s)", spoken_name, candidate)
+        candidate = _name_to_candidate_slug(spoken_name, entity_type)
+        logger.debug("Unknown '%s' (%s) → pending (candidate: %s)", spoken_name, entity_type, candidate)
         return ResolveResult(
             slug=None,
             confidence="pending",
