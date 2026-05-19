@@ -1,6 +1,6 @@
 ---
 name: bee-triage
-description: Triage pending-review pages created by the Bee → Brain pipeline. Confirms or corrects low-confidence fact attributions, creates stub pages for newly discovered entities (people, pets, companies, technologies, places, media), and updates alias mappings.
+description: Triage pending-review pages created by the Bee → Brain pipeline. Confirms or corrects low-confidence fact attributions, creates stub pages for newly discovered entities (people, pets, companies, technologies, places, media, projects), and updates alias mappings.
 triggers:
   - triage bee
   - review pending extractions
@@ -15,6 +15,7 @@ writes_pages:
   - tech/*
   - places/*
   - media/*
+  - projects/*
 ---
 
 # Bee Triage Skill
@@ -227,6 +228,22 @@ When a pending-review page refers to an entity genuinely not in Brain, create a 
    Replace `tags: [book]` with the appropriate format tag: `podcast`, `film`, `show`, or `article`.
    Good aliases are natural spoken references: "that Clear book", "the poker one", "the Lex episode about X". These make future extractions resolve automatically.
 
+### project
+
+1. Ask: *"Is this the right project name? Is it a work initiative or a personal project?"*
+2. Slug: `projects/project-name` (e.g. `projects/ascendion-migration`, `projects/kitchen-renovation`)
+3. Create stub:
+   ```
+   put_page slug=projects/project-name content="""
+   ---
+   title: Project Name
+   type: project
+   aliases: ["Project Name", "how you refer to it in conversation"]
+   ---
+   Stub page created via Bee triage on YYYY-MM-DD.
+   """
+   ```
+
 After creating the stub (any type):
 
 1. `add_timeline_entry slug=<new-slug> date=<date> summary=<fact> source=bee:<conv_id>`
@@ -253,5 +270,5 @@ If any items couldn't be resolved (ambiguous even with context), leave them in p
 - The `bee_conversation_id` frontmatter field on pending-review pages contains the conversation ID
 - Pending-review page slugs follow the pattern: `pending-review/YYYY-MM-DD-{conv_suffix}-{n}`
 - The `entity_type` field on the pending-review page tells you what kind of entity is being proposed
-- Page type conventions: person → `type: person`, pet → `type: note` + `tags: [pet]`, company → `type: company`, technology → `type: concept` + `tags: [technology]`, place → `type: note` + `tags: [place]`, media → `type: media` + `tags: [book|podcast|film|show|article]`
+- Page type conventions: person → `type: person`, pet → `type: note` + `tags: [pet]`, company → `type: company`, technology → `type: concept` + `tags: [technology]`, place → `type: note` + `tags: [place]`, media → `type: media` + `tags: [book|podcast|film|show|article]`, project → `type: project`
 - The dream cycle handles compiling timeline entries into compiled truth — do not edit compiled truth sections directly

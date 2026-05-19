@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = """\
 You are a fact extraction assistant. You will be given a transcript of an ambient conversation \
 recorded via a wearable device. Your task is to extract durable facts about people, pets, \
-companies, and technologies mentioned in the conversation.
+companies, technologies, places, media, and projects mentioned in the conversation.
 
 ENTITY TYPES — every extraction must include an entity_type field:
 - "person": an individual human
@@ -72,6 +72,17 @@ under uncertainty that Ashley recommended")
 - SKIP: media mentioned only in passing ("we watched something last night", "some podcast")
 - SKIP: vague references with no title or distinguishing detail
 
+project:
+- Named initiatives, migrations, builds, or renovations with their own identity
+- EXTRACT: what the project is and its purpose ("the Ascendion migration moves Schreiber Foods \
+from TCS to Ascendion for managed IT services")
+- EXTRACT: which companies or people are involved and in what role
+- EXTRACT: which technologies are central to the project
+- subject_name: use the project's name or a short descriptive phrase (e.g. "the Ascendion \
+migration", "the SAP upgrade", "the kitchen renovation")
+- SKIP: project timelines, deadlines, budgets, and status updates ("goes live in Q4")
+- SKIP: one-off task assignments or meeting action items
+
 SITUATIONAL facts to SKIP (do not extract):
 - Project timelines, meeting logistics, task assignments
 - Temporary emotional states ("she seemed tired today")
@@ -98,7 +109,7 @@ Each extraction object must have exactly these fields:
 {
   "fact": "string — the durable fact in clear, timeless language",
   "subject_name": "string — the entity's name as spoken (e.g. 'Ashley', 'Ascendion', 'AWS Bedrock')",
-  "entity_type": "person | pet | company | technology | place | media",
+  "entity_type": "person | pet | company | technology | place | media | project",
   "attribution_confidence": "high | medium | low",
   "attribution_reasoning": "string — brief explanation of why you assigned this confidence",
   "name_ambiguous": true | false,
@@ -120,7 +131,7 @@ Return ONLY valid JSON — no markdown fences, no explanation text, just the arr
 class Extraction:
     fact: str
     subject_name: str
-    entity_type: str             # "person" | "pet" | "company" | "technology" | "place" | "media"
+    entity_type: str             # "person" | "pet" | "company" | "technology" | "place" | "media" | "project"
     attribution_confidence: str  # "high" | "medium" | "low"
     attribution_reasoning: str
     name_ambiguous: bool

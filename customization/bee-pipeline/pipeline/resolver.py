@@ -22,7 +22,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Page types to load aliases from
-_ENTITY_TYPES = ("person", "company", "media")
+_ENTITY_TYPES = ("person", "company", "media", "project")
 
 # Pronouns and vague references that should always go to pending-review
 _VAGUE_REFERENCES = {
@@ -48,6 +48,7 @@ def _name_to_candidate_slug(name: str, entity_type: str = "person") -> str:
         "technology": "tech",
         "place": "places",
         "media": "media",
+        "project": "projects",
     }
     prefix = prefix_map.get(entity_type, "people")
     return f"{prefix}/{parts}"
