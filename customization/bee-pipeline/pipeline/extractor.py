@@ -40,10 +40,10 @@ pet:
 - Behavioral traits and preferences
 
 company:
-- What the company does or provides ("Ascendian provides managed IT services")
-- Vendor/partner relationships ("Schreiber Foods is transitioning from TCS to Ascendian")
-- Company capabilities or specializations ("ArtheaTech specializes in SAP support")
-- subject_name: use the company or organization name (e.g. "Ascendian", "AWS")
+- What the company does or provides ("Ascendion provides managed IT services")
+- Vendor/partner relationships ("Schreiber Foods is transitioning from TCS to Ascendion")
+- Company capabilities or specializations ("Arthya Tech specializes in SAP support")
+- subject_name: use the company or organization name (e.g. "Ascendion", "AWS")
 - SKIP: contract values, project timelines, quarterly targets
 
 technology:
@@ -97,7 +97,7 @@ If no durable facts are present, return an empty array [].
 Each extraction object must have exactly these fields:
 {
   "fact": "string — the durable fact in clear, timeless language",
-  "subject_name": "string — the entity's name as spoken (e.g. 'Ashley', 'Ascendian', 'AWS Bedrock')",
+  "subject_name": "string — the entity's name as spoken (e.g. 'Ashley', 'Ascendion', 'AWS Bedrock')",
   "entity_type": "person | pet | company | technology | place | media",
   "attribution_confidence": "high | medium | low",
   "attribution_reasoning": "string — brief explanation of why you assigned this confidence",
