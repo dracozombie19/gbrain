@@ -22,7 +22,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Page types to load aliases from
-_ENTITY_TYPES = ("person", "pet", "company")
+_ENTITY_TYPES = ("person", "company", "media")
 
 # Pronouns and vague references that should always go to pending-review
 _VAGUE_REFERENCES = {
@@ -47,6 +47,7 @@ def _name_to_candidate_slug(name: str, entity_type: str = "person") -> str:
         "company": "companies",
         "technology": "tech",
         "place": "places",
+        "media": "media",
     }
     prefix = prefix_map.get(entity_type, "people")
     return f"{prefix}/{parts}"
@@ -85,6 +86,14 @@ class Resolver:
                 slug = summary.get("slug")
                 if not slug or slug in slugs_seen:
                     continue
+                slugs_seen.add(slug)
+                self._load_slug(slug)
+
+        # Pet pages are stored as type "note" with tag "pet" (no core Brain type for pets)
+        pet_pages = self._brain.list_pages(tag="pet", limit=500)
+        for summary in pet_pages:
+            slug = summary.get("slug")
+            if slug and slug not in slugs_seen:
                 slugs_seen.add(slug)
                 self._load_slug(slug)
 

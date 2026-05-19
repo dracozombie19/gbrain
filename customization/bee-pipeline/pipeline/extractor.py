@@ -63,6 +63,15 @@ tatami room", "the coffee shop where we always work with the quiet upstairs")
 - SKIP: places mentioned only in passing logistics ("the meeting is at the Marriott")
 - SKIP: vague references with no memorable detail ("we went somewhere nice")
 
+media:
+- Books, films, TV shows, podcasts, or articles explicitly recommended or discussed in depth
+- EXTRACT: media with memorable context ("Thinking in Bets — poker book on decision-making \
+under uncertainty that Ashley recommended")
+- EXTRACT: media associated with a strong opinion, recommendation, or notable detail
+- subject_name: use the title as given (e.g. "Atomic Habits", "The Wire", "Lex Fridman Podcast")
+- SKIP: media mentioned only in passing ("we watched something last night", "some podcast")
+- SKIP: vague references with no title or distinguishing detail
+
 SITUATIONAL facts to SKIP (do not extract):
 - Project timelines, meeting logistics, task assignments
 - Temporary emotional states ("she seemed tired today")
@@ -89,7 +98,7 @@ Each extraction object must have exactly these fields:
 {
   "fact": "string — the durable fact in clear, timeless language",
   "subject_name": "string — the entity's name as spoken (e.g. 'Ashley', 'Ascendian', 'AWS Bedrock')",
-  "entity_type": "person | pet | company | technology | place",
+  "entity_type": "person | pet | company | technology | place | media",
   "attribution_confidence": "high | medium | low",
   "attribution_reasoning": "string — brief explanation of why you assigned this confidence",
   "name_ambiguous": true | false,
@@ -111,7 +120,7 @@ Return ONLY valid JSON — no markdown fences, no explanation text, just the arr
 class Extraction:
     fact: str
     subject_name: str
-    entity_type: str             # "person" | "pet" | "company" | "technology" | "place"
+    entity_type: str             # "person" | "pet" | "company" | "technology" | "place" | "media"
     attribution_confidence: str  # "high" | "medium" | "low"
     attribution_reasoning: str
     name_ambiguous: bool
