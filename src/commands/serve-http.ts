@@ -217,7 +217,11 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   // Express 5 app
   const app = express();
-  app.set('trust proxy', 'loopback'); // Caddy/Tailscale reverse proxy on localhost
+  // Trust one proxy hop when deployed behind a non-localhost proxy (e.g. Cloud Run,
+  // Fly.io). Loopback-only trust is correct for local Caddy/Tailscale setups.
+  const behindPublicProxy = !!publicUrl &&
+    !new URL(publicUrl).hostname.match(/^(localhost|127\.0\.0\.1|::1)$/);
+  app.set('trust proxy', behindPublicProxy ? 1 : 'loopback');
 
   // ---------------------------------------------------------------------------
   // Cookie parsing — required for /admin auth (express 5 has no built-in)
@@ -260,6 +264,14 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   app.post('/token', ccRateLimiter, express.urlencoded({ extended: false }), async (req, res, next) => {
     if (req.body?.grant_type !== 'client_credentials') {
+      // The SDK's authenticateClient middleware compares req.body.client_secret directly
+      // against the stored value, but gbrain stores a SHA-256 hash (never plaintext).
+      // Pre-hash the submitted secret so both sides of the comparison are hashes.
+      if (req.body?.client_secret) {
+        req.body.client_secret = createHash('sha256')
+          .update(req.body.client_secret)
+          .digest('hex');
+      }
       return next(); // Fall through to SDK's token handler
     }
 
