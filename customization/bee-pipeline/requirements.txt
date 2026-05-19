@@ -1,0 +1,4 @@
+anthropic[vertex]>=0.40.0
+google-cloud-storage>=2.0.0
+google-cloud-secret-manager>=2.0.0
+functions-framework>=3.0.0
