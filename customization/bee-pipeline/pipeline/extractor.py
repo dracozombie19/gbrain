@@ -52,6 +52,17 @@ technology:
 - subject_name: use the technology name (e.g. "AWS Bedrock", "DynamoDB", "GitHub Copilot")
 - SKIP: technologies merely mentioned, evaluated, or discussed but not actively in use
 
+place:
+- Named or describable physical locations with memorable characteristics
+- EXTRACT: parks, playgrounds, restaurants, cafes, venues, neighbourhoods with specific \
+notable features ("Greenfield Park has an in-ground merry-go-round")
+- EXTRACT: associations that aid future recall ("the sushi place on Oak Street with the \
+tatami room", "the coffee shop where we always work with the quiet upstairs")
+- subject_name: use the place's name, or a short descriptive phrase when no name is known \
+(e.g. "Greenfield Park", "the coffee shop on 5th", "the mall playground")
+- SKIP: places mentioned only in passing logistics ("the meeting is at the Marriott")
+- SKIP: vague references with no memorable detail ("we went somewhere nice")
+
 SITUATIONAL facts to SKIP (do not extract):
 - Project timelines, meeting logistics, task assignments
 - Temporary emotional states ("she seemed tired today")
@@ -78,7 +89,7 @@ Each extraction object must have exactly these fields:
 {
   "fact": "string — the durable fact in clear, timeless language",
   "subject_name": "string — the entity's name as spoken (e.g. 'Ashley', 'Ascendian', 'AWS Bedrock')",
-  "entity_type": "person | pet | company | technology",
+  "entity_type": "person | pet | company | technology | place",
   "attribution_confidence": "high | medium | low",
   "attribution_reasoning": "string — brief explanation of why you assigned this confidence",
   "name_ambiguous": true | false,
@@ -100,7 +111,7 @@ Return ONLY valid JSON — no markdown fences, no explanation text, just the arr
 class Extraction:
     fact: str
     subject_name: str
-    entity_type: str             # "person" | "pet" | "company" | "technology"
+    entity_type: str             # "person" | "pet" | "company" | "technology" | "place"
     attribution_confidence: str  # "high" | "medium" | "low"
     attribution_reasoning: str
     name_ambiguous: bool

@@ -46,6 +46,7 @@ def _name_to_candidate_slug(name: str, entity_type: str = "person") -> str:
         "pet": "pets",
         "company": "companies",
         "technology": "tech",
+        "place": "places",
     }
     prefix = prefix_map.get(entity_type, "people")
     return f"{prefix}/{parts}"
@@ -90,6 +91,14 @@ class Resolver:
         # Technology pages are stored as type "concept" with tag "technology"
         tech_pages = self._brain.list_pages(tag="technology", limit=500)
         for summary in tech_pages:
+            slug = summary.get("slug")
+            if slug and slug not in slugs_seen:
+                slugs_seen.add(slug)
+                self._load_slug(slug)
+
+        # Place pages are stored as type "note" with tag "place"
+        place_pages = self._brain.list_pages(tag="place", limit=500)
+        for summary in place_pages:
             slug = summary.get("slug")
             if slug and slug not in slugs_seen:
                 slugs_seen.add(slug)
