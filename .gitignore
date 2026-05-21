@@ -38,3 +38,5 @@ export/
 # Tier 3 PGLite snapshot fixture (built on demand by build:pglite-snapshot)
 test/fixtures/pglite-snapshot.tar
 test/fixtures/pglite-snapshot.version
+__pycache__/
+customization/bee-pipeline/bee-pipeline-state.json

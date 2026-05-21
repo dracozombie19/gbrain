@@ -1,8 +1,16 @@
-"""GCS-backed pipeline state for Bee cursor tracking."""
+"""Pipeline state management for Bee cursor tracking.
+
+Two implementations:
+- StateManager: GCS-backed (production)
+- LocalStateManager: local JSON file (dry-run / local dev — no GCP needed)
+
+Use create_state_manager(config) to get the right one automatically.
+"""
 
 import datetime
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -78,3 +86,58 @@ class StateManager:
             content_type="application/x-ndjson",
         )
         logger.info("Logged failed entry to %s/%s.jsonl", self._failed_prefix, date_str)
+
+
+class LocalStateManager:
+    """Local-file-backed state manager for dry-run / local development.
+
+    Stores cursor state in a JSON file on disk. Failed extractions are
+    appended to a sibling JSONL file. No GCP credentials required.
+    """
+
+    def __init__(self, state_path: str) -> None:
+        self._state_path = state_path
+        self._failed_path = state_path.replace(".json", "-failed.jsonl")
+        self._state: Optional[PipelineState] = None
+
+    def load(self) -> PipelineState:
+        try:
+            with open(self._state_path) as f:
+                data = json.load(f)
+            self._state = PipelineState(
+                cursor=data.get("cursor"),
+                last_processed_at=data.get("last_processed_at"),
+            )
+            logger.info("Loaded local pipeline state from %s: cursor=%s", self._state_path, self._state.cursor)
+        except FileNotFoundError:
+            logger.info("No local state file at %s — starting fresh", self._state_path)
+            self._state = PipelineState()
+        except Exception as exc:
+            logger.warning("Could not read local state (%s) — starting fresh", exc)
+            self._state = PipelineState()
+        return self._state
+
+    def save(self, next_cursor: Optional[str], fetched_at: str) -> None:
+        if self._state is None:
+            raise RuntimeError("Call load() before save()")
+        self._state.cursor = next_cursor
+        self._state.last_processed_at = fetched_at
+        with open(self._state_path, "w") as f:
+            json.dump({
+                "cursor": self._state.cursor,
+                "last_processed_at": self._state.last_processed_at,
+            }, f, indent=2)
+        logger.info("Saved local pipeline state to %s: cursor=%s", self._state_path, self._state.cursor)
+
+    def log_failed(self, entry: dict) -> None:
+        line = json.dumps(entry, ensure_ascii=False)
+        with open(self._failed_path, "a") as f:
+            f.write(line + "\n")
+        logger.info("Logged failed entry to %s", self._failed_path)
+
+
+def create_state_manager(config) -> "StateManager | LocalStateManager":
+    """Return the right state manager based on config."""
+    if config.local_state_path:
+        return LocalStateManager(config.local_state_path)
+    return StateManager(config.gcs_bucket, config.gcs_state_object, config.gcs_failed_prefix)

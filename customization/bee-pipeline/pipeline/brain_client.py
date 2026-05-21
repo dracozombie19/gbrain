@@ -1,5 +1,13 @@
-"""Brain HTTP MCP client — speaks MCP JSON-RPC 2.0 with OAuth client_credentials."""
+"""Brain HTTP MCP client — speaks MCP JSON-RPC 2.0 with OAuth client_credentials.
 
+The Brain HTTP server uses the MCP Streamable HTTP transport (spec 2025-03-26).
+Clients must send `Accept: application/json, text/event-stream` on every request;
+without it the server returns 406. The server may respond with either:
+  - Content-Type: application/json  (single synchronous response)
+  - Content-Type: text/event-stream (SSE stream; each `data:` line is a JSON-RPC message)
+"""
+
+import json as _json
 import time
 import logging
 from typing import Any
@@ -10,6 +18,28 @@ import requests
 logger = logging.getLogger(__name__)
 
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _parse_sse_response(text: str) -> dict:
+    """Extract the first JSON-RPC message from an SSE response body.
+
+    SSE format:
+        event: message
+        data: {"jsonrpc":"2.0","id":1,"result":{...}}
+
+    Skips comment lines (`:`) and the `[DONE]` sentinel.
+    """
+    for line in text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        data = line[6:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            return _json.loads(data)
+        except _json.JSONDecodeError as exc:
+            logger.warning("Skipping unparseable SSE data line: %s — %s", data[:120], exc)
+    raise ValueError(f"No valid JSON-RPC message found in SSE response: {text[:300]!r}")
 _DEFAULT_TIMEOUT = 30
 _TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
@@ -76,6 +106,9 @@ class BrainClient:
         headers = {
             "Authorization": f"Bearer {self._bearer()}",
             "Content-Type": "application/json",
+            # MCP Streamable HTTP transport requires both types in Accept.
+            # Without this the server returns 406 Not Acceptable.
+            "Accept": "application/json, text/event-stream",
         }
 
         for attempt in range(retries):
@@ -107,7 +140,13 @@ class BrainClient:
                 continue
 
             resp.raise_for_status()
-            rpc = resp.json()
+
+            # MCP server may respond with plain JSON or an SSE stream.
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/event-stream" in content_type:
+                rpc = _parse_sse_response(resp.text)
+            else:
+                rpc = resp.json()
 
             if "error" in rpc:
                 raise BrainError(operation, rpc["error"])
@@ -121,7 +160,6 @@ class BrainClient:
 
             # Unwrap text content if present
             if isinstance(result, dict) and "content" in result:
-                import json as _json
                 text = result["content"][0].get("text", "") if result["content"] else ""
                 try:
                     return _json.loads(text)
@@ -193,3 +231,64 @@ class BrainError(Exception):
         msg = str(self.error.get("message", "")).lower()
         code = str(self.error.get("code", "")).lower()
         return "not_found" in code or "not found" in msg
+
+
+class DryRunBrainClient:
+    """Brain client that logs writes instead of executing them.
+
+    Read operations (get_page, list_pages) are proxied to a real BrainClient
+    when brain_url is provided, so the resolver can load real aliases. If
+    brain_url is empty, reads return empty results and all facts route to
+    pending-review (which are then logged, not written).
+
+    Write operations (put_page, add_timeline_entry, add_tag) are logged only.
+    """
+
+    def __init__(self, brain_url: str = "", client_id: str = "", client_secret: str = "") -> None:
+        self._real: BrainClient | None = None
+        if brain_url:
+            logger.info("DryRunBrainClient: read ops will proxy to %s", brain_url)
+            self._real = BrainClient(brain_url, client_id, client_secret)
+        else:
+            logger.info("DryRunBrainClient: no BRAIN_URL — reads return empty, all facts → pending-review")
+
+    def get_page(self, slug: str) -> dict | None:
+        if self._real:
+            return self._real.get_page(slug)
+        return None
+
+    def list_pages(self, tag: str | None = None, type: str | None = None, limit: int = 200) -> list[dict]:
+        if self._real:
+            return self._real.list_pages(tag=tag, type=type, limit=limit)
+        return []
+
+    def put_page(self, slug: str, content: str) -> dict:
+        logger.info("[DRY RUN] Would put_page slug=%s\n%s", slug, content[:300])
+        return {}
+
+    def add_timeline_entry(
+        self,
+        slug: str,
+        date: str,
+        summary: str,
+        detail: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        logger.info(
+            "[DRY RUN] Would add_timeline_entry slug=%s date=%s source=%s\n  %s",
+            slug, date, source, summary,
+        )
+
+    def add_tag(self, slug: str, tag: str) -> None:
+        logger.info("[DRY RUN] Would add_tag slug=%s tag=%s", slug, tag)
+
+
+def create_brain_client(config) -> "BrainClient | DryRunBrainClient":
+    """Return the right brain client based on config."""
+    if config.dry_run:
+        return DryRunBrainClient(
+            brain_url=config.brain_url,
+            client_id=config.brain_client_id,
+            client_secret=config.brain_client_secret,
+        )
+    return BrainClient(config.brain_url, config.brain_client_id, config.brain_client_secret)

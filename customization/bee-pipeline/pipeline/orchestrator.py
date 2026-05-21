@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .bee_client import BeeClient, Conversation, BeeCliError
-from .brain_client import BrainClient, BrainError
+from .brain_client import BrainClient, DryRunBrainClient, BrainError, create_brain_client
 from .config import Config
-from .extractor import Extractor, Extraction, ExtractionError
+from .extractor import Extractor, LocalExtractor, Extraction, ExtractionError, create_extractor
 from .resolver import Resolver, ResolveResult
-from .state import StateManager
+from .state import StateManager, LocalStateManager, create_state_manager
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +65,20 @@ class RunSummary:
 
 
 class Orchestrator:
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        *,
+        brain: "BrainClient | DryRunBrainClient | None" = None,
+        extractor: "Extractor | LocalExtractor | None" = None,
+        state: "StateManager | LocalStateManager | None" = None,
+    ) -> None:
         self._config = config
-        self._brain = BrainClient(
-            config.brain_url,
-            config.brain_client_id,
-            config.brain_client_secret,
-        )
+        self._brain = brain if brain is not None else create_brain_client(config)
         self._bee = BeeClient(config.bee_token)
-        self._extractor = Extractor(config.gcp_project, config.gcp_region, config.vertex_model)
+        self._extractor = extractor if extractor is not None else create_extractor(config)
         self._resolver = Resolver(self._brain)
-        self._state = StateManager(
-            config.gcs_bucket,
-            config.gcs_state_object,
-            config.gcs_failed_prefix,
-        )
+        self._state = state if state is not None else create_state_manager(config)
 
     def run(self) -> RunSummary:
         summary = RunSummary()

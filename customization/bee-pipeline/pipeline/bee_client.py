@@ -22,14 +22,26 @@ Pass it to --cursor on the next call to get only newer conversations.
 import json
 import logging
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_BEE_CMD = "bee"
 _CLI_TIMEOUT = 60  # seconds
+
+
+def _bee(*args: str) -> list[str]:
+    """Build a bee CLI invocation that works on both Windows and Unix.
+
+    On Windows, npm global packages install as .cmd wrappers that can't be
+    executed directly by subprocess without shell=True. Routing through
+    `cmd /c` lets Windows resolve the .cmd extension.
+    """
+    if sys.platform == "win32":
+        return ["cmd", "/c", "bee"] + list(args)
+    return ["bee"] + list(args)
 
 
 class BeeCliError(Exception):
@@ -127,7 +139,7 @@ class BeeClient:
         logger.info("Authenticating Bee CLI")
         try:
             result = subprocess.run(
-                [_BEE_CMD, "login", "--token-stdin"],
+                _bee("login", "--token-stdin"),
                 input=self._token,
                 capture_output=True,
                 text=True,
@@ -155,9 +167,7 @@ class BeeClient:
         """
         self.login()
 
-        cmd = [_BEE_CMD, "changed", "--json"]
-        if cursor:
-            cmd += ["--cursor", cursor]
+        cmd = _bee("changed", "--json") + (["--cursor", cursor] if cursor else [])
 
         logger.info("Running: %s", " ".join(cmd))
         try:
@@ -171,7 +181,8 @@ class BeeClient:
             raise BeeCliError(f"bee changed timed out after {_CLI_TIMEOUT}s") from exc
         except FileNotFoundError as exc:
             raise BeeCliError(
-                "bee CLI not found. Install: npm install -g @beeai/cli"
+                "bee CLI not found. Install with: npm install -g @beeai/cli\n"
+                "Then verify: bee --version"
             ) from exc
 
         if result.returncode != 0:
