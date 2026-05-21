@@ -206,12 +206,12 @@ class Extractor:
         self._client = AnthropicVertex(project_id=project_id, region=region)
         self._model = model
 
-    def extract(self, transcript: str, conversation_date: str) -> list[Extraction]:
+    def extract(self, transcript: str, conversation_date: str, summary: str = "") -> list[Extraction]:
         """Run fact extraction on a transcript. Returns list of Extraction objects."""
-        user_message = (
-            f"Conversation date: {conversation_date}\n\n"
-            f"Transcript:\n{transcript}"
-        )
+        user_message = f"Conversation date: {conversation_date}\n\n"
+        if summary:
+            user_message += f"Bee AI summary (pre-processed interpretation of this conversation):\n{summary}\n\n"
+        user_message += f"Raw transcript:\n{transcript}"
 
         logger.info("Running extraction on %d-char transcript", len(transcript))
 
@@ -249,11 +249,12 @@ class LocalExtractor:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
-    def extract(self, transcript: str, conversation_date: str) -> list[Extraction]:
-        user_message = (
-            f"Conversation date: {conversation_date}\n\n"
-            f"Transcript:\n{transcript}"
-        )
+    def extract(self, transcript: str, conversation_date: str, summary: str = "") -> list[Extraction]:
+        user_message = f"Conversation date: {conversation_date}\n\n"
+        if summary:
+            user_message += f"Bee AI summary (pre-processed interpretation of this conversation):\n{summary}\n\n"
+        user_message += f"Raw transcript:\n{transcript}"
+
         logger.info("Running extraction (direct API) on %d-char transcript", len(transcript))
         try:
             response = self._client.messages.create(

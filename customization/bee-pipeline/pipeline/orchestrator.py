@@ -133,7 +133,7 @@ class Orchestrator:
             return
 
         try:
-            extractions = self._extractor.extract(transcript, conv_date)
+            extractions = self._extractor.extract(transcript, conv_date, summary=conv.summary)
         except ExtractionError as exc:
             logger.error("Extraction failed for conversation %s: %s", conv.id_str, exc)
             summary.errors.append(f"Extraction error for {conv.id_str}: {exc}")

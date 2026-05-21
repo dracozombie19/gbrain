@@ -62,6 +62,8 @@ class Conversation:
     created_at_ms: int
     state: str
     utterances: list[Utterance] = field(default_factory=list)
+    summary: str = ""
+    short_summary: str = ""
 
     @property
     def transcript(self) -> str:
@@ -121,6 +123,8 @@ def _parse_conversation(raw: dict) -> Optional[Conversation]:
         created_at_ms=int(raw.get("created_at", 0)),
         state=state,
         utterances=utterances,
+        summary=str(raw.get("summary", "") or ""),
+        short_summary=str(raw.get("short_summary", "") or ""),
     )
 
 

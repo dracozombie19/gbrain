@@ -180,9 +180,24 @@ echo -n "postgres://..." | gcloud secrets create GBRAIN_DATABASE_URL --data-file
 echo -n "ACCESS_KEY_VALUE" | gcloud secrets create GBRAIN_STORAGE_ACCESS_KEY --data-file=- --project=dowd-assistant
 echo -n "SECRET_KEY_VALUE" | gcloud secrets create GBRAIN_STORAGE_SECRET_KEY --data-file=- --project=dowd-assistant
 
-# Grant the Cloud Run runtime service account read access to each secret
+# Google AI Studio API key (kept for reference; embeddings use OpenAI)
+"YOUR_GOOGLE_API_KEY" | Out-File -Encoding utf8 -NoNewline "$env:TEMP\gai.txt"
+gcloud secrets create GBRAIN_GOOGLE_API_KEY --data-file="$env:TEMP\gai.txt" --project=dowd-assistant
+Remove-Item "$env:TEMP\gai.txt"
+
+# Anthropic API key (dream cycle: synthesize + patterns phases)
+"sk-ant-..." | Out-File -Encoding utf8 -NoNewline "$env:TEMP\ant.txt"
+gcloud secrets create ANTHROPIC_API_KEY --data-file="$env:TEMP\ant.txt" --project=dowd-assistant
+Remove-Item "$env:TEMP\ant.txt"
+
+# OpenAI API key (text-embedding-3-large — the active embedding provider)
+"sk-..." | Out-File -Encoding utf8 -NoNewline "$env:TEMP\oai.txt"
+gcloud secrets create OPENAI_API_KEY --data-file="$env:TEMP\oai.txt" --project=dowd-assistant
+Remove-Item "$env:TEMP\oai.txt"
+
+# Grant the Cloud Run runtime service account read access to all secrets
 $SA = "590600029741-compute@developer.gserviceaccount.com"
-foreach ($secret in @("GBRAIN_DATABASE_URL","GBRAIN_STORAGE_ACCESS_KEY","GBRAIN_STORAGE_SECRET_KEY")) {
+foreach ($secret in @("GBRAIN_DATABASE_URL","GBRAIN_STORAGE_ACCESS_KEY","GBRAIN_STORAGE_SECRET_KEY","GBRAIN_GOOGLE_API_KEY","ANTHROPIC_API_KEY","OPENAI_API_KEY")) {
   gcloud secrets add-iam-policy-binding $secret `
     --member="serviceAccount:$SA" `
     --role="roles/secretmanager.secretAccessor" `
@@ -253,8 +268,8 @@ gcloud run deploy gbrain-server `
   --concurrency 80 `
   --timeout 300 `
   --min-instances 0 `
-  --set-secrets="DATABASE_URL=GBRAIN_DATABASE_URL:latest,GBRAIN_STORAGE_ACCESS_KEY=GBRAIN_STORAGE_ACCESS_KEY:latest,GBRAIN_STORAGE_SECRET_KEY=GBRAIN_STORAGE_SECRET_KEY:latest,GOOGLE_GENERATIVE_AI_API_KEY=GBRAIN_GOOGLE_API_KEY:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest" `
-  --set-env-vars="GBRAIN_HTTP_TRUST_PROXY=1,GBRAIN_STORAGE_BACKEND=s3,GBRAIN_STORAGE_BUCKET=gbrain-storage-dowd-assistant,GBRAIN_STORAGE_REGION=us-central1,GBRAIN_STORAGE_ENDPOINT=https://storage.googleapis.com,GBRAIN_HTTP_PUBLIC_URL=https://gbrain-server-590600029741.us-central1.run.app"
+  --set-secrets="DATABASE_URL=GBRAIN_DATABASE_URL:latest,GBRAIN_STORAGE_ACCESS_KEY=GBRAIN_STORAGE_ACCESS_KEY:latest,GBRAIN_STORAGE_SECRET_KEY=GBRAIN_STORAGE_SECRET_KEY:latest,GOOGLE_GENERATIVE_AI_API_KEY=GBRAIN_GOOGLE_API_KEY:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest" `
+  --set-env-vars="GBRAIN_HTTP_TRUST_PROXY=1,GBRAIN_STORAGE_BACKEND=s3,GBRAIN_STORAGE_BUCKET=gbrain-storage-dowd-assistant,GBRAIN_STORAGE_REGION=us-central1,GBRAIN_STORAGE_ENDPOINT=https://storage.googleapis.com,GBRAIN_HTTP_PUBLIC_URL=https://gbrain-server-590600029741.us-central1.run.app,GBRAIN_EMBEDDING_MODEL=openai:text-embedding-3-large,GBRAIN_EMBEDDING_DIMENSIONS=1536"
 ```
 
 ### Why each flag is the way it is
@@ -265,6 +280,7 @@ gcloud run deploy gbrain-server `
 - **`--timeout 300`** — 5 minute request timeout. Some gbrain operations (embed, sync) can take a while.
 - **`--min-instances 0`** — cold starts allowed (cheaper). First request after idle takes ~5-10s to warm up. If you want it always warm, switch to `--min-instances 1` (adds roughly $5-10/month for a 2GiB instance).
 - **`--set-secrets`** — no plain-text credentials. Each secret is mounted as an env var at runtime; nothing is baked into the image or the revision config.
+- **`GBRAIN_EMBEDDING_MODEL` / `GBRAIN_EMBEDDING_DIMENSIONS`** — the gateway reads the embedding provider from env at startup, before the DB connection is established. Setting it here (rather than via `gbrain config set`) is the only reliable way to pin the provider on a stateless Cloud Run container. `openai:text-embedding-3-large` at 1536 dims is the default; if you ever switch providers, update both env vars AND re-embed all chunks.
 - **Container does NOT run migrations on startup** — Cloud Run's startup probe is too tight for cold migrations on a populated brain. Migrations happen in Step 1.
 
 ### After deploy: verify
@@ -277,6 +293,111 @@ curl https://gbrain-server-590600029741.us-central1.run.app/health
 Then check the new revision's startup log in the Cloud Run console. The container should reach the `gbrain serve` listening message within a few seconds — no migration output, since migrations were already applied in Step 1.
 
 If something looks wrong, roll back to the previous revision with one click in the Cloud Run console under "Revisions" → "Manage traffic".
+
+### Step 3 — scheduled background jobs
+
+These Cloud Run Jobs run on a schedule via Cloud Scheduler. They share the same
+container image as the service but override the command. All jobs need the same
+secrets and embedding env vars as the service.
+
+#### One-time job creation
+
+```powershell
+$PROJECT  = "dowd-assistant"
+$REGION   = "us-central1"
+$IMAGE    = "us-central1-docker.pkg.dev/dowd-assistant/gbrain-repo/gbrain-server:latest"
+$SECRETS  = "DATABASE_URL=GBRAIN_DATABASE_URL:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GOOGLE_GENERATIVE_AI_API_KEY=GBRAIN_GOOGLE_API_KEY:latest"
+$ENVVARS  = "GBRAIN_EMBEDDING_MODEL=openai:text-embedding-3-large,GBRAIN_EMBEDDING_DIMENSIONS=1536"
+
+# Full dream cycle (lint → synthesize → extract → patterns → embed → orphans → purge)
+gcloud run jobs create gbrain-dream `
+  --image $IMAGE `
+  --region $REGION `
+  --project $PROJECT `
+  --memory 2Gi --cpu 2 `
+  --task-timeout 1800 `
+  --set-secrets=$SECRETS `
+  --set-env-vars=$ENVVARS `
+  --args="dream,--dir,/tmp"
+
+# Embed-only (fast catch-up after pages added via MCP)
+gcloud run jobs create gbrain-embed `
+  --image $IMAGE `
+  --region $REGION `
+  --project $PROJECT `
+  --memory 2Gi --cpu 2 `
+  --task-timeout 900 `
+  --set-secrets=$SECRETS `
+  --set-env-vars=$ENVVARS `
+  --args="embed,--stale"
+```
+
+To redeploy jobs after an image update (jobs pin the tag you specify at create
+time, so update them explicitly):
+
+```powershell
+$tag   = git rev-parse --short HEAD
+$image = "us-central1-docker.pkg.dev/dowd-assistant/gbrain-repo/gbrain-server:$tag"
+foreach ($job in @("gbrain-dream", "gbrain-embed")) {
+  gcloud run jobs update $job --image $image --region us-central1 --project dowd-assistant
+}
+```
+
+#### Cloud Scheduler triggers
+
+```powershell
+$PROJECT = "dowd-assistant"
+$REGION  = "us-central1"
+$SA      = "590600029741-compute@developer.gserviceaccount.com"
+
+# Full dream cycle — nightly at 2 AM Pacific
+gcloud scheduler jobs create http gbrain-dream-nightly `
+  --schedule="0 2 * * *" `
+  --time-zone="America/Los_Angeles" `
+  --uri="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT/jobs/gbrain-dream:run" `
+  --http-method=POST `
+  --oauth-service-account-email=$SA `
+  --location=$REGION `
+  --project=$PROJECT
+
+# Embed catch-up — every 30 minutes
+gcloud scheduler jobs create http gbrain-embed-frequent `
+  --schedule="*/30 * * * *" `
+  --time-zone="UTC" `
+  --uri="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT/jobs/gbrain-embed:run" `
+  --http-method=POST `
+  --oauth-service-account-email=$SA `
+  --location=$REGION `
+  --project=$PROJECT
+```
+
+The service account needs `roles/run.invoker` on the jobs to trigger them from
+Scheduler:
+
+```powershell
+$SA = "590600029741-compute@developer.gserviceaccount.com"
+foreach ($job in @("gbrain-dream", "gbrain-embed")) {
+  gcloud run jobs add-iam-policy-binding $job `
+    --region us-central1 `
+    --member="serviceAccount:$SA" `
+    --role="roles/run.invoker" `
+    --project=dowd-assistant
+}
+```
+
+#### Updating job secrets or env vars
+
+Use `--update-secrets` / `--update-env-vars` (additive, won't remove existing vars):
+
+```powershell
+foreach ($job in @("gbrain-dream", "gbrain-embed")) {
+  gcloud run jobs update $job `
+    --region us-central1 `
+    --project dowd-assistant `
+    --update-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest" `
+    --update-env-vars="GBRAIN_EMBEDDING_MODEL=openai:text-embedding-3-large,GBRAIN_EMBEDDING_DIMENSIONS=1536"
+}
+```
 
 ### Future improvements (not done yet)
 
