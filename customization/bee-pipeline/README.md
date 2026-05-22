@@ -1,14 +1,14 @@
 # Bee → Brain Pipeline
 
-GCP Cloud Function that pulls Bee wearable transcripts every 4 hours, extracts durable biographical facts via Claude on Vertex AI, and writes them as timeline entries on Brain person/pet pages via the Brain HTTP MCP server.
+GCP Cloud Run service that pulls Bee wearable transcripts every 4 hours, extracts durable biographical facts via Claude, and writes them as timeline entries on Brain person/pet pages via the Brain HTTP MCP server.
 
 ## Architecture
 
 ```
 Cloud Scheduler (every 4h)
-  → Cloud Function (Python 3.12 + Node.js + Bee CLI)
+  → Cloud Run (Python 3.12 + Node.js + Bee CLI)
       ├── Bee CLI (`bee changed --json`)  — fetch new conversations via cursor
-      ├── Vertex AI                       — Claude fact extraction (anthropic[vertex])
+      ├── Anthropic API                   — Claude fact extraction (direct API key)
       ├── Brain HTTP MCP                  — write timeline entries + pending-review pages
       └── GCS                             — cursor state + failed extraction log
 ```
@@ -62,10 +62,7 @@ bee status
    ```
    Note the `client_id` and `client_secret` — you'll need them.
 
-3. **Vertex AI enabled** in your GCP project with Anthropic Claude model access:
-   - Enable Vertex AI API
-   - Request access to Anthropic models on Vertex AI (Model Garden)
-   - Cloud Function service account needs `roles/aiplatform.user`
+3. **Anthropic API key** — the pipeline calls the Anthropic API directly for fact extraction. No Vertex AI setup needed.
 
 4. **GCS bucket** for state storage (any existing bucket; pipeline writes to `bee-pipeline/` prefix).
 
@@ -75,11 +72,10 @@ bee status
    echo -n "YOUR_BRAIN_URL"     | gcloud secrets create BRAIN_URL --data-file=-
    echo -n "YOUR_CLIENT_ID"     | gcloud secrets create BRAIN_CLIENT_ID --data-file=-
    echo -n "YOUR_SECRET"        | gcloud secrets create BRAIN_CLIENT_SECRET --data-file=-
+   echo -n "sk-ant-..."         | gcloud secrets create ANTHROPIC_API_KEY --data-file=-
    ```
-   No `ANTHROPIC_API_KEY` needed — auth uses Application Default Credentials.
 
 6. **Service account permissions**:
-   - `roles/aiplatform.user` — Vertex AI
    - `roles/secretmanager.secretAccessor` — Secret Manager
    - `roles/storage.objectAdmin` — GCS bucket
 
@@ -87,8 +83,8 @@ bee status
 
 Run this once after Brain is running to add aliases to family pages:
 ```bash
-BRAIN_URL=http://localhost:9090 \
-BRAIN_CLIENT_ID=... BRAIN_CLIENT_SECRET=... \
+GBRAIN_URL=http://localhost:9090 \
+BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... \
 python update_aliases.py
 ```
 
@@ -101,8 +97,8 @@ The resolver uses these aliases to map spoken names (e.g. "Ashley", "Mama") to B
 cd customization/bee-pipeline
 pip install -r requirements.txt
 
-BRAIN_URL=http://localhost:9090 \
-BRAIN_CLIENT_ID=... BRAIN_CLIENT_SECRET=... \
+GBRAIN_URL=http://localhost:9090 \
+BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... \
 python test_brain_client.py
 ```
 
@@ -118,7 +114,7 @@ bee changed --json | python -m json.tool | head -50
 ### Run pipeline locally
 ```bash
 cp .env.example .env
-# Fill in .env with real values (BEE_TOKEN, BRAIN_*, GCS_BUCKET, GCP_PROJECT)
+# Fill in .env with real values (BEE_API_TOKEN, GBRAIN_URL, BEE_GBRAIN_CLIENT_*, GCS_BUCKET)
 
 source .env
 functions-framework --target run_pipeline --debug
@@ -146,27 +142,43 @@ CMD ["functions-framework", "--target=run_pipeline", "--port=8080"]
 ```
 
 ### Deploy to Cloud Run (recommended)
-```bash
-gcloud builds submit customization/bee-pipeline \
-  --tag gcr.io/YOUR_PROJECT/bee-brain-pipeline
 
-gcloud run deploy bee-brain-pipeline \
-  --image gcr.io/YOUR_PROJECT/bee-brain-pipeline \
-  --region YOUR_REGION \
-  --no-allow-unauthenticated \
-  --service-account YOUR_SA@YOUR_PROJECT.iam.gserviceaccount.com \
-  --set-env-vars GCP_PROJECT=YOUR_PROJECT,GCS_BUCKET=YOUR_BUCKET \
-  --memory=512Mi \
+**One-time setup** — create the Artifact Registry repository and configure Docker auth:
+```bash
+gcloud artifacts repositories create bee-brain-pipeline \
+  --repository-format=docker \
+  --location=us-central1 \
+  --project=dowd-assistant
+
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
+**Build and deploy:**
+```bash
+$tag = git rev-parse --short HEAD
+$image = "us-central1-docker.pkg.dev/dowd-assistant/bee-brain-pipeline/pipeline:$tag"
+
+# Build + push to Artifact Registry
+gcloud builds submit --tag $image --project=dowd-assistant customization/bee-pipeline
+
+gcloud run deploy bee-brain-pipeline `
+  --image $image `
+  --region us-central1 `
+  --no-allow-unauthenticated `
+  --service-account 590600029741-compute@developer.gserviceaccount.com `
+  --set-env-vars "GCP_PROJECT=dowd-assistant,GCS_BUCKET=gbrain-storage-dowd-assistant,PENDING_REVIEW_ONLY=1" `
+  --set-secrets "BEE_API_TOKEN=BEE_API_TOKEN:latest,GBRAIN_URL=GBRAIN_URL:latest,BEE_GBRAIN_CLIENT_ID=BEE_GBRAIN_CLIENT_ID:latest,BEE_GBRAIN_CLIENT_SECRET=BEE_GBRAIN_CLIENT_SECRET:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest" `
+  --memory=512Mi `
   --timeout=300s
 ```
 
 ### Cloud Scheduler trigger
 ```bash
-gcloud scheduler jobs create http bee-brain-pipeline-trigger \
-  --location=YOUR_REGION \
-  --schedule="0 */4 * * *" \
-  --uri="https://bee-brain-pipeline-HASH-YOUR_REGION.run.app" \
-  --oidc-service-account-email=YOUR_SA@YOUR_PROJECT.iam.gserviceaccount.com
+gcloud scheduler jobs create http bee-brain-pipeline-schedule `
+  --location=us-central1 `
+  --schedule="0 */4 * * *" `
+  --uri="https://bee-brain-pipeline-590600029741.us-central1.run.app" `
+  --oidc-service-account-email=590600029741-compute@developer.gserviceaccount.com
 ```
 
 ## How It Works
@@ -177,7 +189,7 @@ gcloud scheduler jobs create http bee-brain-pipeline-trigger \
 
 3. **Filter**: Only `state == "COMPLETED"` conversations with non-empty utterance text are processed.
 
-4. **Extract**: Claude (via Vertex AI) reads each transcript and extracts durable biographical facts with attribution confidence and subject name.
+4. **Extract**: Claude (via Anthropic API) reads each transcript and extracts durable biographical facts with attribution confidence and subject name.
 
 5. **Route**:
    - High confidence + unambiguous + resolved person → `add_timeline_entry` on their Brain page

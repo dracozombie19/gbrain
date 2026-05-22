@@ -4,10 +4,10 @@ Run this once after the Brain server is running and the bee-pipeline OAuth
 client is registered. It adds the aliases the Bee pipeline's resolver needs.
 
 Usage:
-    BRAIN_CLIENT_ID=... BRAIN_CLIENT_SECRET=... python update_aliases.py
+    BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... python update_aliases.py
 
     # Dry run (print what would change, don't write):
-    BRAIN_CLIENT_ID=... BRAIN_CLIENT_SECRET=... python update_aliases.py --dry-run
+    BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... python update_aliases.py --dry-run
 """
 
 import os
@@ -18,9 +18,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from pipeline.brain_client import BrainClient, BrainError
 
-BRAIN_URL = os.getenv("BRAIN_URL", "http://localhost:9090")
-CLIENT_ID = os.getenv("BRAIN_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("BRAIN_CLIENT_SECRET", "")
+BRAIN_URL = os.getenv("GBRAIN_URL", "http://localhost:9090")
+CLIENT_ID = os.getenv("BEE_GBRAIN_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("BEE_GBRAIN_CLIENT_SECRET", "")
 
 DRY_RUN = "--dry-run" in sys.argv
 
@@ -56,7 +56,7 @@ def _set_frontmatter_aliases(content: str, aliases: list[str]) -> str:
 
 def main() -> None:
     if not CLIENT_ID or not CLIENT_SECRET:
-        print("ERROR: Set BRAIN_CLIENT_ID and BRAIN_CLIENT_SECRET env vars.")
+        print("ERROR: Set BEE_GBRAIN_CLIENT_ID and BEE_GBRAIN_CLIENT_SECRET env vars.")
         sys.exit(1)
 
     if DRY_RUN:

@@ -9,7 +9,7 @@ Usage:
     #    (copy client_id and client_secret printed)
     #
     # 3. Run this script:
-    #    BRAIN_CLIENT_ID=... BRAIN_CLIENT_SECRET=... python test_brain_client.py
+    #    BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... python test_brain_client.py
 
 import os, sys
 """
@@ -23,9 +23,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from pipeline.brain_client import BrainClient, BrainError
 
-BRAIN_URL = os.getenv("BRAIN_URL", "http://localhost:9090")
-CLIENT_ID = os.getenv("BRAIN_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("BRAIN_CLIENT_SECRET", "")
+BRAIN_URL = os.getenv("GBRAIN_URL", "http://localhost:9090")
+CLIENT_ID = os.getenv("BEE_GBRAIN_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("BEE_GBRAIN_CLIENT_SECRET", "")
 
 TEST_SLUG = "pending-review/test-brain-client-smoke"
 
@@ -39,7 +39,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 def main() -> None:
     if not CLIENT_ID or not CLIENT_SECRET:
-        print("ERROR: Set BRAIN_CLIENT_ID and BRAIN_CLIENT_SECRET env vars.")
+        print("ERROR: Set BEE_GBRAIN_CLIENT_ID and BEE_GBRAIN_CLIENT_SECRET env vars.")
         print("  gbrain auth register-client bee-pipeline --scopes read write")
         sys.exit(1)
 

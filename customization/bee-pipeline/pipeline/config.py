@@ -4,14 +4,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-from google.cloud import secretmanager
-
-
-def _load_secret(client: secretmanager.SecretManagerServiceClient, project: str, name: str) -> str:
-    path = f"projects/{project}/secrets/{name}/versions/latest"
-    response = client.access_secret_version(request={"name": path})
-    return response.payload.data.decode("utf-8").strip()
-
 
 @dataclass
 class Config:
@@ -19,7 +11,7 @@ class Config:
     gcp_project: str
     gcp_region: str
 
-    # Bee CLI token (JWT, no expiry — store in Secret Manager as BEE_TOKEN)
+    # Bee CLI token (JWT, no expiry — store in Secret Manager as BEE_API_TOKEN)
     bee_token: str
 
     # Brain HTTP MCP server
@@ -32,7 +24,7 @@ class Config:
     gcs_state_object: str = "bee-pipeline/state.json"
     gcs_failed_prefix: str = "bee-pipeline/failed"
 
-    # Vertex AI (Anthropic model)
+    # Vertex AI (Anthropic model) — only used when anthropic_api_key is not set
     vertex_model: str = "claude-sonnet-4-6@20250514"
 
     # Pipeline tuning
@@ -53,27 +45,45 @@ class Config:
     local_state_path: Optional[str] = None
 
     # Direct Anthropic API key. When set, uses the Anthropic API directly instead of
-    # Vertex AI. Useful for local testing without GCP Application Default Credentials.
+    # Vertex AI. Injected as a Cloud Run secret env var via --set-secrets.
     anthropic_api_key: Optional[str] = None
 
 
 def load_config_from_env() -> Config:
-    """Load config from environment variables (for local development).
+    """Load config from environment variables.
 
-    Dry-run mode (DRY_RUN=1):
-      - Brain writes are skipped (logged only).
-      - LOCAL_STATE_PATH defaults to ./bee-pipeline-state.json so GCS_BUCKET is not required.
-      - ANTHROPIC_API_KEY can be used instead of Vertex AI (no GCP credentials needed).
-      - BRAIN_URL / BRAIN_CLIENT_ID / BRAIN_CLIENT_SECRET are optional; when omitted the
-        resolver loads no aliases and all facts route to pending-review (logged only).
+    Works for both local development and Cloud Run deployment. In Cloud Run,
+    all secrets are injected as env vars via --set-secrets.
 
-    Full mode (default):
-      - GCS_BUCKET, BRAIN_URL, BRAIN_CLIENT_ID, BRAIN_CLIENT_SECRET are required.
-      - Either GCP_PROJECT (Vertex AI) or ANTHROPIC_API_KEY must be set.
+    Env vars
+    --------
+    Required:
+      BEE_API_TOKEN       — Bee CLI JWT (Secret Manager: BEE_API_TOKEN)
+      ANTHROPIC_API_KEY   — Anthropic API key (Secret Manager: ANTHROPIC_API_KEY)
+
+    Required in production (optional in dry-run):
+      GBRAIN_URL              — Brain HTTP MCP server URL (Secret Manager: GBRAIN_URL)
+      BEE_GBRAIN_CLIENT_ID    — OAuth client ID (Secret Manager: BEE_GBRAIN_CLIENT_ID)
+      BEE_GBRAIN_CLIENT_SECRET — OAuth client secret (Secret Manager: BEE_GBRAIN_CLIENT_SECRET)
+      GCS_BUCKET              — GCS bucket for cursor state
+
+    Optional:
+      GCP_PROJECT         — GCP project (used for GCS; defaults to empty)
+      GCP_REGION          — GCP region (default: us-central1)
+      LOCAL_STATE_PATH    — path for cursor state file (overrides GCS)
+      DRY_RUN             — 1/true/yes to skip Brain writes and auto-use local state
+      PENDING_REVIEW_ONLY — 1/true/yes to route all extractions to pending-review
     """
     dry_run = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
     pending_review_only = os.environ.get("PENDING_REVIEW_ONLY", "").lower() in ("1", "true", "yes")
     anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    gcp_project = os.environ.get("GCP_PROJECT", "")
+
+    if not anthropic_api_key and not gcp_project:
+        raise ValueError(
+            "Either ANTHROPIC_API_KEY or GCP_PROJECT (for Vertex AI) must be set"
+        )
 
     # State storage: prefer local file over GCS in dry-run mode
     local_state_path = os.environ.get("LOCAL_STATE_PATH")
@@ -88,23 +98,16 @@ def load_config_from_env() -> Config:
                 "or DRY_RUN=1 to auto-use ./bee-pipeline-state.json)"
             )
 
-    # Extraction backend: either Vertex AI (needs GCP_PROJECT) or direct Anthropic API
-    gcp_project = os.environ.get("GCP_PROJECT", "")
-    if not gcp_project and not anthropic_api_key:
-        raise ValueError(
-            "Either GCP_PROJECT (for Vertex AI) or ANTHROPIC_API_KEY must be set"
-        )
-
     # Brain connection: required in full mode, optional in dry-run
-    brain_url = os.environ.get("BRAIN_URL", "")
-    brain_client_id = os.environ.get("BRAIN_CLIENT_ID", "")
-    brain_client_secret = os.environ.get("BRAIN_CLIENT_SECRET", "")
+    brain_url = os.environ.get("GBRAIN_URL", "")
+    brain_client_id = os.environ.get("BEE_GBRAIN_CLIENT_ID", "")
+    brain_client_secret = os.environ.get("BEE_GBRAIN_CLIENT_SECRET", "")
 
     if not dry_run:
         missing = [k for k, v in {
-            "BRAIN_URL": brain_url,
-            "BRAIN_CLIENT_ID": brain_client_id,
-            "BRAIN_CLIENT_SECRET": brain_client_secret,
+            "GBRAIN_URL": brain_url,
+            "BEE_GBRAIN_CLIENT_ID": brain_client_id,
+            "BEE_GBRAIN_CLIENT_SECRET": brain_client_secret,
         }.items() if not v]
         if missing:
             raise ValueError(
@@ -115,7 +118,7 @@ def load_config_from_env() -> Config:
     return Config(
         gcp_project=gcp_project,
         gcp_region=os.environ.get("GCP_REGION", "us-central1"),
-        bee_token=os.environ["BEE_TOKEN"],
+        bee_token=os.environ["BEE_API_TOKEN"],
         brain_url=brain_url,
         brain_client_id=brain_client_id,
         brain_client_secret=brain_client_secret,
@@ -128,31 +131,6 @@ def load_config_from_env() -> Config:
     )
 
 
-def load_config_from_secret_manager() -> Config:
-    """Load config from GCP Secret Manager (for Cloud Function deployment)."""
-    project = os.environ["GCP_PROJECT"]
-    region = os.environ.get("GCP_REGION", "us-central1")
-    client = secretmanager.SecretManagerServiceClient()
-
-    def secret(name: str) -> str:
-        return _load_secret(client, project, name)
-
-    return Config(
-        gcp_project=project,
-        gcp_region=region,
-        bee_token=secret("BEE_API_TOKEN"),
-        brain_url=secret("BRAIN_URL"),
-        brain_client_id=secret("BRAIN_CLIENT_ID"),
-        brain_client_secret=secret("BRAIN_CLIENT_SECRET"),
-        gcs_bucket=os.environ["GCS_BUCKET"],
-        vertex_model=os.environ.get("VERTEX_MODEL", "claude-sonnet-4-6@20250514"),
-        pending_review_only=os.environ.get("PENDING_REVIEW_ONLY", "").lower() in ("1", "true", "yes"),
-    )
-
-
 def load_config() -> Config:
-    """Auto-detect environment: use Secret Manager in GCP, env vars locally."""
-    if os.environ.get("K_SERVICE"):
-        # Running in Cloud Run / Cloud Functions gen2
-        return load_config_from_secret_manager()
+    """Load config — same path for local dev and Cloud Run (all secrets via env vars)."""
     return load_config_from_env()

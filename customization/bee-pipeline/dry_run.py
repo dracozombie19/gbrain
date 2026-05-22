@@ -7,18 +7,18 @@ saved to a local JSON file so you can re-run incrementally.
 
 Minimum required env vars
 --------------------------
-  BEE_TOKEN          — JWT from Bee CLI (see README "Getting the Bee Token")
+  BEE_API_TOKEN      — JWT from Bee CLI (see README "Getting the Bee Token")
   ANTHROPIC_API_KEY  — direct API key (skips Vertex AI / GCP entirely)
 
 Optional env vars
 -----------------
-  BRAIN_URL          — if set, the resolver loads real aliases from Brain so
-                       entities resolve correctly instead of all going to
-                       pending-review. Requires BRAIN_CLIENT_ID + BRAIN_CLIENT_SECRET.
-  BRAIN_CLIENT_ID    — OAuth client ID (from `gbrain auth register-client`)
-  BRAIN_CLIENT_SECRET
-  LOCAL_STATE_PATH   — path for cursor state file (default: ./bee-pipeline-state.json)
-  VERTEX_MODEL       — override the Vertex AI model (ignored when ANTHROPIC_API_KEY is set)
+  GBRAIN_URL              — if set, the resolver loads real aliases from Brain so
+                            entities resolve correctly instead of all going to
+                            pending-review. Requires BEE_GBRAIN_CLIENT_ID + BEE_GBRAIN_CLIENT_SECRET.
+  BEE_GBRAIN_CLIENT_ID    — OAuth client ID (from `gbrain auth register-client`)
+  BEE_GBRAIN_CLIENT_SECRET
+  LOCAL_STATE_PATH        — path for cursor state file (default: ./bee-pipeline-state.json)
+  VERTEX_MODEL            — override the Vertex AI model (ignored when ANTHROPIC_API_KEY is set)
 
 Usage
 -----
@@ -27,7 +27,7 @@ Usage
 
   # 2. Copy and fill in the env file
   cp .env.example .env
-  # At minimum set BEE_TOKEN and ANTHROPIC_API_KEY
+  # At minimum set BEE_API_TOKEN and ANTHROPIC_API_KEY
 
   # 3. Run
   DRY_RUN=1 source .env && python dry_run.py
@@ -112,10 +112,10 @@ def main() -> int:
 def _print_help() -> None:
     print(
         "\nRequired env vars:\n"
-        "  BEE_TOKEN         — JWT from Bee CLI\n"
+        "  BEE_API_TOKEN     — JWT from Bee CLI\n"
         "  ANTHROPIC_API_KEY — direct Anthropic API key  (or GCP_PROJECT for Vertex AI)\n"
         "\nOptional:\n"
-        "  BRAIN_URL / BRAIN_CLIENT_ID / BRAIN_CLIENT_SECRET — for real alias resolution\n"
+        "  GBRAIN_URL / BEE_GBRAIN_CLIENT_ID / BEE_GBRAIN_CLIENT_SECRET — for real alias resolution\n"
         "  LOCAL_STATE_PATH  — cursor state file (default: ./bee-pipeline-state.json)\n"
         "\nSee README.md for full setup instructions.\n"
     )
