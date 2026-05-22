@@ -54,11 +54,13 @@ import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 // ─── Types ─────────────────────────────────────────────────────────
 
 export type CyclePhase =
-  | 'lint' | 'backlinks' | 'sync' | 'synthesize' | 'extract' | 'extract_facts'
+  | 'git_clone' | 'lint' | 'backlinks' | 'sync' | 'synthesize' | 'extract' | 'extract_facts'
   | 'patterns' | 'recompute_emotional_weight' | 'consolidate'
-  | 'embed' | 'orphans' | 'purge';
+  | 'embed' | 'orphans' | 'purge' | 'git_push';
 
 export const ALL_PHASES: CyclePhase[] = [
+  // v0.git_export: shallow-clone the backup repo so sync picks up manual pushes.
+  'git_clone',
   'lint',
   'backlinks',
   'sync',
@@ -86,6 +88,8 @@ export const ALL_PHASES: CyclePhase[] = [
   // the 72h recovery window. Runs last so the rest of the cycle sees the
   // recoverable set; the purge then drops what's expired.
   'purge',
+  // v0.git_export: export all DB pages to the cloned repo and push to remote.
+  'git_push',
 ];
 
 /**
@@ -97,6 +101,7 @@ export const ALL_PHASES: CyclePhase[] = [
  * + facts UPDATEs).
  */
 const NEEDS_LOCK_PHASES: ReadonlySet<CyclePhase> = new Set([
+  // git_clone is read-only (clones to a temp dir), no lock needed.
   'lint',
   'backlinks',
   'sync',
@@ -110,6 +115,9 @@ const NEEDS_LOCK_PHASES: ReadonlySet<CyclePhase> = new Set([
   'consolidate',
   'embed',
   'purge',
+  // git_push writes files to the temp dir and does network I/O; hold the lock
+  // so the export sees a fully-settled brain state.
+  'git_push',
 ]);
 
 export type PhaseStatus = 'ok' | 'warn' | 'fail' | 'skipped';
@@ -179,6 +187,8 @@ export interface CycleReport {
     facts_consolidated: number;
     /** v0.31: number of new takes created by the consolidate phase. */
     consolidate_takes_written: number;
+    /** v0.git_export: number of pages exported to the backup repo. */
+    pages_exported: number;
   };
 }
 
@@ -950,12 +960,45 @@ export async function runCycle(
     }
   }
 
+  // Temp dir produced by git_clone, consumed by git_push. Threads through the
+  // cycle so sync uses the cloned dir (picking up manual pushes) and git_push
+  // exports back to the same dir before pushing.
+  let gitExportTempDir: string | null = null;
+  // When git_clone succeeds, filesystem phases (lint, backlinks, sync, extract)
+  // use the cloned dir instead of opts.brainDir so the full cycle operates on
+  // the fresh remote content.
+  let effectiveBrainDir = opts.brainDir;
+
   try {
+    // ── Phase 0: git_clone ───────────────────────────────────────
+    if (phases.includes('git_clone')) {
+      checkAborted(opts.signal);
+      if (!engine) {
+        phaseResults.push({
+          phase: 'git_clone',
+          status: 'skipped',
+          duration_ms: 0,
+          summary: 'no database connected',
+          details: { reason: 'no_database' },
+        });
+      } else {
+        progress.start('cycle.git_clone');
+        const { runPhaseGitClone } = await import('./cycle/git-export.ts');
+        const { result: cloneOutcome, duration_ms } = await timePhase(() => runPhaseGitClone(engine));
+        cloneOutcome.result.duration_ms = duration_ms;
+        gitExportTempDir = cloneOutcome.tempDir;
+        if (gitExportTempDir) effectiveBrainDir = gitExportTempDir;
+        phaseResults.push(cloneOutcome.result);
+        progress.finish();
+      }
+      await safeYield(opts.yieldBetweenPhases);
+    }
+
     // ── Phase 1: lint ────────────────────────────────────────────
     if (phases.includes('lint')) {
       checkAborted(opts.signal);
       progress.start('cycle.lint');
-      const { result, duration_ms } = await timePhase(() => runPhaseLint(opts.brainDir, dryRun));
+      const { result, duration_ms } = await timePhase(() => runPhaseLint(effectiveBrainDir, dryRun));
       result.duration_ms = duration_ms;
       phaseResults.push(result);
       progress.finish();
@@ -966,7 +1009,7 @@ export async function runCycle(
     if (phases.includes('backlinks')) {
       checkAborted(opts.signal);
       progress.start('cycle.backlinks');
-      const { result, duration_ms } = await timePhase(() => runPhaseBacklinks(opts.brainDir, dryRun));
+      const { result, duration_ms } = await timePhase(() => runPhaseBacklinks(effectiveBrainDir, dryRun));
       result.duration_ms = duration_ms;
       phaseResults.push(result);
       progress.finish();
@@ -991,7 +1034,7 @@ export async function runCycle(
         });
       } else {
         progress.start('cycle.sync');
-        const { result, duration_ms } = await timePhase(() => runPhaseSync(engine, opts.brainDir, dryRun, pull, phases.includes('extract')));
+        const { result, duration_ms } = await timePhase(() => runPhaseSync(engine, effectiveBrainDir, dryRun, pull, phases.includes('extract')));
         result.duration_ms = duration_ms;
         // Capture changed slugs for incremental extract.
         syncPagesAffected = (result as SyncPhaseResult).pagesAffected;
@@ -1052,7 +1095,7 @@ export async function runCycle(
         // If sync didn't run (phases exclude it) or failed, syncPagesAffected
         // is undefined → extract falls back to full walk (safe default).
         progress.start('cycle.extract');
-        const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, opts.brainDir, dryRun, syncPagesAffected));
+        const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, effectiveBrainDir, dryRun, syncPagesAffected));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();
@@ -1250,6 +1293,28 @@ export async function runCycle(
       }
       await safeYield(opts.yieldBetweenPhases);
     }
+    // ── Phase N: git_push ────────────────────────────────────────
+    if (phases.includes('git_push')) {
+      checkAborted(opts.signal);
+      if (!engine) {
+        phaseResults.push({
+          phase: 'git_push',
+          status: 'skipped',
+          duration_ms: 0,
+          summary: 'no database connected',
+          details: { reason: 'no_database' },
+        });
+      } else {
+        progress.start('cycle.git_push');
+        const { runPhaseGitPush } = await import('./cycle/git-export.ts');
+        const { result, duration_ms } = await timePhase(() =>
+          runPhaseGitPush(engine, gitExportTempDir, dryRun));
+        result.duration_ms = duration_ms;
+        phaseResults.push(result);
+        progress.finish();
+      }
+      await safeYield(opts.yieldBetweenPhases);
+    }
   } finally {
     if (lock) {
       try { await lock.release(); } catch { /* best-effort */ }
@@ -1289,6 +1354,7 @@ function emptyTotals(): CycleReport['totals'] {
     purged_pages_count: 0,
     facts_consolidated: 0,
     consolidate_takes_written: 0,
+    pages_exported: 0,
   };
 }
 
@@ -1324,6 +1390,8 @@ function extractTotals(phases: PhaseResult[]): CycleReport['totals'] {
     } else if (p.phase === 'consolidate' && p.details) {
       t.facts_consolidated = Number(p.details.facts_consolidated ?? 0);
       t.consolidate_takes_written = Number(p.details.takes_written ?? 0);
+    } else if (p.phase === 'git_push' && p.details) {
+      t.pages_exported = Number(p.details.exported ?? 0);
     }
   }
   return t;

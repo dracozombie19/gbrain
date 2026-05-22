@@ -20,7 +20,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Install certificates and basic utils
-RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl git && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary from the builder
 COPY --from=builder /app/bin/gbrain /usr/local/bin/gbrain
