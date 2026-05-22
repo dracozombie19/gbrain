@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .bee_client import BeeClient, Conversation, BeeCliError
+from .bee_client import BeeClient, BeeFact, Conversation, BeeCliError
 from .brain_client import BrainClient, DryRunBrainClient, BrainError, create_brain_client
 from .config import Config
 from .extractor import Extractor, LocalExtractor, Extraction, ExtractionError, create_extractor
@@ -30,14 +30,73 @@ def _pending_review_slug(conv_date: str, conv_id: str, fact_index: int) -> str:
 
 
 
+def _format_snippet_blockquote(snippet: str) -> str:
+    """Render a multi-line transcript snippet as a markdown blockquote."""
+    if not snippet:
+        return ""
+    lines = snippet.splitlines()
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in lines)
+
+
+def _expand_snippet(transcript: str, anchor: str, context_lines: int = 4) -> str:
+    """Return a broader window from the transcript centered on the anchor text.
+
+    Finds the anchor (the short snippet from Claude) in the transcript, then
+    returns that line plus `context_lines` lines above and below it — giving
+    roughly 5-10 lines of context without inflating extractor output tokens.
+    Falls back to the anchor itself if not found.
+    """
+    if not anchor or not transcript:
+        return anchor
+
+    # Normalize whitespace for matching
+    anchor_clean = " ".join(anchor.split()).lower()
+    transcript_lines = transcript.splitlines()
+
+    best_line = -1
+    best_score = 0
+    anchor_words = set(anchor_clean.split())
+
+    for i, line in enumerate(transcript_lines):
+        line_clean = " ".join(line.split()).lower()
+        # Exact substring match wins immediately
+        if anchor_clean in line_clean or line_clean in anchor_clean:
+            best_line = i
+            break
+        # Otherwise score by word overlap (for multi-line anchors)
+        if anchor_words:
+            overlap = len(anchor_words & set(line_clean.split())) / len(anchor_words)
+            if overlap > best_score:
+                best_score = overlap
+                best_line = i
+
+    if best_line == -1 or best_score < 0.3:
+        return anchor
+
+    start = max(0, best_line - context_lines)
+    end = min(len(transcript_lines), best_line + context_lines + 1)
+    return "\n".join(transcript_lines[start:end])
+
+
 def _pending_review_content(
     extraction: Extraction,
     resolve: ResolveResult,
     conv_id: str,
     conv_date: str,
+    pending_review_only: bool = False,
+    transcript: str = "",
 ) -> str:
     proposed = resolve.candidate_slug or resolve.slug or "unknown"
     title_fact = extraction.fact[:60].replace("\n", " ")
+    # Expand snippet from the raw transcript when available; fall back to the
+    # 1-3 sentence version Claude returned.
+    display_snippet = (
+        _expand_snippet(transcript, extraction.transcript_snippet)
+        if transcript
+        else extraction.transcript_snippet
+    )
+    snippet_block = _format_snippet_blockquote(display_snippet)
+    audit_note = "\n**Note**: audit mode — routed to pending-review regardless of confidence.\n" if pending_review_only and resolve.confidence == "high" else ""
     return (
         f"---\n"
         f"title: \"Pending Review: {title_fact}\"\n"
@@ -49,7 +108,31 @@ def _pending_review_content(
         f"**Proposed entity** ({extraction.entity_type}): {proposed}  \n"
         f"**Fact**: {extraction.fact}  \n"
         f"**Confidence reason**: {extraction.attribution_reasoning}  \n"
-        f"**Snippet**: > {extraction.transcript_snippet}\n"
+        f"{audit_note}"
+        f"\n**Transcript snippet**:\n\n{snippet_block}\n"
+    )
+
+
+def _bee_fact_pending_review_slug(fact: "BeeFact") -> str:
+    return f"pending-review/bee-fact-{fact.id}"
+
+
+def _bee_fact_pending_review_content(fact: "BeeFact") -> str:
+    title = fact.text[:60].replace("\n", " ")
+    tags_str = ", ".join(fact.tags) if fact.tags else "general"
+    confirmed_str = "yes" if fact.confirmed else "no"
+    return (
+        f"---\n"
+        f"title: \"Bee Fact: {title}\"\n"
+        f"type: note\n"
+        f"tags: [pending-review, bee-fact]\n"
+        f"bee_fact_id: \"{fact.id}\"\n"
+        f"bee_fact_date: \"{fact.date_str}\"\n"
+        f"bee_fact_confirmed: {confirmed_str}\n"
+        f"---\n"
+        f"**Source**: Bee AI extraction — speaker labels are frequently inaccurate; verify before trusting.\n\n"
+        f"**Fact**: {fact.text}\n\n"
+        f"**Bee tags**: {tags_str}\n"
     )
 
 
@@ -61,6 +144,7 @@ class RunSummary:
     facts_extracted: int = 0
     timeline_entries_written: int = 0
     pending_review_written: int = 0
+    bee_facts_written: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -96,13 +180,16 @@ class Orchestrator:
 
         conversations = result.conversations
         next_cursor = result.next_cursor
+        bee_facts = result.bee_facts
 
         summary.conversations_fetched = len(conversations)
-        logger.info("Fetched %d usable conversations from Bee", len(conversations))
+        logger.info(
+            "Fetched %d usable conversations, %d Bee facts",
+            len(conversations), len(bee_facts),
+        )
 
-        if not conversations:
-            logger.info("No new conversations — nothing to process")
-            # Advance cursor even if no conversations (Bee may return a new cursor)
+        if not conversations and not bee_facts:
+            logger.info("No new data — nothing to process")
             if next_cursor and next_cursor != state.cursor:
                 self._state.save(next_cursor, fetched_at)
             return summary
@@ -111,14 +198,18 @@ class Orchestrator:
             self._process_conversation(conv, summary)
             summary.conversations_processed += 1
 
+        for fact in bee_facts:
+            self._write_bee_fact(fact, summary)
+
         # Save cursor only after all conversations processed successfully
         self._state.save(next_cursor, fetched_at)
 
         logger.info(
-            "Run complete: %d processed, %d timeline entries, %d pending-review",
+            "Run complete: %d processed, %d timeline entries, %d pending-review, %d bee facts",
             summary.conversations_processed,
             summary.timeline_entries_written,
             summary.pending_review_written,
+            summary.bee_facts_written,
         )
         return summary
 
@@ -149,7 +240,7 @@ class Orchestrator:
 
         for idx, ext in enumerate(extractions):
             try:
-                self._route_extraction(ext, conv, conv_date, idx, summary)
+                self._route_extraction(ext, conv, conv_date, idx, summary, transcript)
             except Exception as exc:
                 logger.error(
                     "Unexpected error routing extraction %d from %s: %s",
@@ -164,6 +255,7 @@ class Orchestrator:
         conv_date: str,
         idx: int,
         summary: RunSummary,
+        transcript: str = "",
     ) -> None:
         resolve = self._resolver.resolve(ext.subject_name, ext.entity_type)
 
@@ -174,15 +266,21 @@ class Orchestrator:
             and resolve.slug is not None
         )
 
-        if high_confidence:
+        if high_confidence and not self._config.pending_review_only:
             self._write_timeline_entry(ext, resolve, resolve.slug, conv, conv_date, idx, summary)
         else:
-            logger.info(
-                "Routing to pending-review: %s (confidence=%s, ambiguous=%s, resolve=%s)",
-                ext.subject_name, ext.attribution_confidence,
-                ext.name_ambiguous, resolve.confidence,
-            )
-            self._write_pending_review(ext, resolve, conv, conv_date, idx, summary)
+            if self._config.pending_review_only and high_confidence:
+                logger.info(
+                    "Audit mode: routing high-confidence fact to pending-review: %s",
+                    ext.subject_name,
+                )
+            else:
+                logger.info(
+                    "Routing to pending-review: %s (confidence=%s, ambiguous=%s, resolve=%s)",
+                    ext.subject_name, ext.attribution_confidence,
+                    ext.name_ambiguous, resolve.confidence,
+                )
+            self._write_pending_review(ext, resolve, conv, conv_date, idx, summary, transcript)
 
     def _write_timeline_entry(
         self,
@@ -228,9 +326,13 @@ class Orchestrator:
         conv_date: str,
         idx: int,
         summary: RunSummary,
+        transcript: str = "",
     ) -> None:
         slug = _pending_review_slug(conv_date, conv.id_str, idx)
-        content = _pending_review_content(ext, resolve, conv.id_str, conv_date)
+        content = _pending_review_content(
+            ext, resolve, conv.id_str, conv_date,
+            self._config.pending_review_only, transcript,
+        )
 
         try:
             self._brain.put_page(slug, content)
@@ -240,3 +342,16 @@ class Orchestrator:
         except BrainError as exc:
             logger.error("Failed to write pending-review page %s: %s", slug, exc)
             raise
+
+    def _write_bee_fact(self, fact: BeeFact, summary: RunSummary) -> None:
+        slug = _bee_fact_pending_review_slug(fact)
+        content = _bee_fact_pending_review_content(fact)
+        try:
+            self._brain.put_page(slug, content)
+            self._brain.add_tag(slug, "pending-review")
+            self._brain.add_tag(slug, "bee-fact")
+            logger.info("Bee fact pending-review written: %s (id=%s)", slug, fact.id)
+            summary.bee_facts_written += 1
+        except BrainError as exc:
+            logger.error("Failed to write Bee fact page %s: %s", slug, exc)
+            summary.errors.append(f"Bee fact write error for {fact.id}: {exc}")

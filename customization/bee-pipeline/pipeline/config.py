@@ -37,12 +37,16 @@ class Config:
 
     # Pipeline tuning
     max_conversations_per_run: int = 50
-    extraction_max_tokens: int = 4096
+    extraction_max_tokens: int = 8192
 
     # --- Dry-run / local dev options ---
 
     # When True: extraction runs normally but Brain writes are logged, not executed.
     dry_run: bool = False
+
+    # When True: ALL extractions go to pending-review regardless of confidence.
+    # Use this to audit the pipeline output before allowing direct Brain writes.
+    pending_review_only: bool = False
 
     # Path to a local JSON file for cursor state. When set, GCS is not used.
     # Defaults to "./bee-pipeline-state.json" in dry-run mode when GCS_BUCKET is unset.
@@ -68,6 +72,7 @@ def load_config_from_env() -> Config:
       - Either GCP_PROJECT (Vertex AI) or ANTHROPIC_API_KEY must be set.
     """
     dry_run = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+    pending_review_only = os.environ.get("PENDING_REVIEW_ONLY", "").lower() in ("1", "true", "yes")
     anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
 
     # State storage: prefer local file over GCS in dry-run mode
@@ -117,6 +122,7 @@ def load_config_from_env() -> Config:
         gcs_bucket=gcs_bucket,
         vertex_model=os.environ.get("VERTEX_MODEL", "claude-sonnet-4-6@20250514"),
         dry_run=dry_run,
+        pending_review_only=pending_review_only,
         local_state_path=local_state_path,
         anthropic_api_key=anthropic_api_key,
     )
@@ -140,6 +146,7 @@ def load_config_from_secret_manager() -> Config:
         brain_client_secret=secret("BRAIN_CLIENT_SECRET"),
         gcs_bucket=os.environ["GCS_BUCKET"],
         vertex_model=os.environ.get("VERTEX_MODEL", "claude-sonnet-4-6@20250514"),
+        pending_review_only=os.environ.get("PENDING_REVIEW_ONLY", "").lower() in ("1", "true", "yes"),
     )
 
 

@@ -73,6 +73,7 @@ def main() -> int:
     logger.info("Extraction: %s", "direct Anthropic API" if config.anthropic_api_key else f"Vertex AI ({config.vertex_model})")
     logger.info("State file: %s", config.local_state_path)
     logger.info("Brain URL:  %s", config.brain_url or "(none — all facts → pending-review logged)")
+    logger.info("Mode:       %s", "AUDIT (pending-review only)" if config.pending_review_only else "normal")
     logger.info("=" * 60)
 
     from pipeline.orchestrator import Orchestrator
@@ -86,12 +87,14 @@ def main() -> int:
 
     result = {
         "dry_run": True,
+        "pending_review_only": config.pending_review_only,
         "conversations_fetched": summary.conversations_fetched,
         "conversations_processed": summary.conversations_processed,
         "conversations_skipped": summary.conversations_skipped,
         "facts_extracted": summary.facts_extracted,
         "timeline_entries_written": summary.timeline_entries_written,
         "pending_review_written": summary.pending_review_written,
+        "bee_facts_written": summary.bee_facts_written,
         "errors": summary.errors,
     }
 

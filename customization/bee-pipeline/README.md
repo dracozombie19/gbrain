@@ -185,6 +185,22 @@ gcloud scheduler jobs create http bee-brain-pipeline-trigger \
 
 6. **Cursor advance**: After all conversations in the batch process, the new cursor is saved to GCS.
 
+## Audit Mode (Pending-Review Only)
+
+Set `PENDING_REVIEW_ONLY=1` to route **all** extractions to pending-review, including high-confidence ones. Useful when you want to audit the pipeline output before trusting it to write directly to Brain pages.
+
+```bash
+# Cloud Run: add to --set-env-vars
+PENDING_REVIEW_ONLY=1
+
+# Local dev
+PENDING_REVIEW_ONLY=1 python -m main
+```
+
+High-confidence facts routed via audit mode are annotated with `**Note**: audit mode — routed to pending-review regardless of confidence.` in the pending-review page so you can distinguish them from genuinely ambiguous ones during triage.
+
+When you're satisfied with the quality, remove `PENDING_REVIEW_ONLY` (or set it to `0`) and redeploy.
+
 ## Pending-Review Triage
 
 Low-confidence or ambiguous extractions land in `pending-review/{date}-{id}-{n}` pages tagged `pending-review`. Use the `bee-triage` Brain skill to work through them:

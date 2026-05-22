@@ -49,6 +49,7 @@ def run_pipeline(request: Request):
         "facts_extracted": summary.facts_extracted,
         "timeline_entries_written": summary.timeline_entries_written,
         "pending_review_written": summary.pending_review_written,
+        "bee_facts_written": summary.bee_facts_written,
         "errors": summary.errors,
     }
 

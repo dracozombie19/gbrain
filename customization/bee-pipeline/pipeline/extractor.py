@@ -157,12 +157,32 @@ class Extraction:
     transcript_snippet: str
 
 
-def _parse_response(text: str) -> list[Extraction]:
-    """Parse Claude's JSON response into Extraction objects.
+def _salvage_truncated_json(text: str) -> list | None:
+    """Try to recover complete objects from a truncated JSON array.
 
-    Falls back gracefully: parse errors produce a single low-confidence
-    extraction so the conversation isn't silently lost.
+    When the model hits max_tokens mid-array, the response is valid JSON up to
+    the cut point. Find the last complete object (closing `}`) and close the
+    array there. Returns the parsed list, or None if nothing is recoverable.
     """
+    last_brace = text.rfind("}")
+    if last_brace == -1:
+        return None
+    candidate = text[: last_brace + 1] + "]"
+    # Strip any leading non-`[` characters to find the array open
+    open_bracket = candidate.find("[")
+    if open_bracket == -1:
+        return None
+    try:
+        data = json.loads(candidate[open_bracket:])
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+def _parse_response(text: str, truncated: bool = False) -> list[Extraction]:
+    """Parse Claude's JSON response into Extraction objects."""
     text = text.strip()
 
     # Strip accidental markdown fences
@@ -172,9 +192,21 @@ def _parse_response(text: str) -> list[Extraction]:
 
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.warning("Failed to parse extractor response as JSON: %s\nRaw: %.200s", exc, text)
-        return []
+    except json.JSONDecodeError:
+        if truncated:
+            data = _salvage_truncated_json(text)
+            if data is None:
+                raise ExtractionError(
+                    f"max_tokens reached and truncated JSON is unrecoverable "
+                    f"(increase extraction_max_tokens). Raw tail: {text[-200:]!r}"
+                )
+            logger.warning(
+                "max_tokens truncation: salvaged %d complete object(s) from partial response",
+                len(data),
+            )
+        else:
+            logger.warning("Failed to parse extractor response as JSON. Raw: %.200s", text)
+            return []
 
     if not isinstance(data, list):
         logger.warning("Extractor returned non-list JSON type: %s", type(data).__name__)
@@ -201,10 +233,11 @@ def _parse_response(text: str) -> list[Extraction]:
 
 
 class Extractor:
-    def __init__(self, project_id: str, region: str, model: str) -> None:
+    def __init__(self, project_id: str, region: str, model: str, max_tokens: int = 8192) -> None:
         from anthropic import AnthropicVertex
         self._client = AnthropicVertex(project_id=project_id, region=region)
         self._model = model
+        self._max_tokens = max_tokens
 
     def extract(self, transcript: str, conversation_date: str, summary: str = "") -> list[Extraction]:
         """Run fact extraction on a transcript. Returns list of Extraction objects."""
@@ -218,7 +251,7 @@ class Extractor:
         try:
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=4096,
+                max_tokens=self._max_tokens,
                 temperature=0,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
@@ -227,10 +260,20 @@ class Extractor:
             logger.error("Extraction API call failed: %s", exc)
             raise ExtractionError(f"Vertex AI call failed: {exc}") from exc
 
+        truncated = response.stop_reason == "max_tokens"
+        if truncated:
+            logger.error(
+                "Extraction hit max_tokens limit (%d) — response truncated. "
+                "Attempting salvage. Consider increasing extraction_max_tokens.",
+                self._max_tokens,
+            )
+
         text = response.content[0].text if response.content else ""
-        extractions = _parse_response(text)
+        extractions = _parse_response(text, truncated=truncated)
         logger.info("Extracted %d facts from transcript", len(extractions))
-        if not extractions:
+        if truncated:
+            logger.warning("Truncated extraction yielded %d salvaged fact(s)", len(extractions))
+        elif not extractions:
             logger.debug("Empty extraction — raw response: %.300s", text)
         return extractions
 
@@ -245,9 +288,10 @@ class LocalExtractor:
     Requires ANTHROPIC_API_KEY. Uses the same prompt and output shape as Extractor.
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6") -> None:
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", max_tokens: int = 8192) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
+        self._max_tokens = max_tokens
 
     def extract(self, transcript: str, conversation_date: str, summary: str = "") -> list[Extraction]:
         user_message = f"Conversation date: {conversation_date}\n\n"
@@ -259,7 +303,7 @@ class LocalExtractor:
         try:
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=4096,
+                max_tokens=self._max_tokens,
                 temperature=0,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
@@ -268,18 +312,29 @@ class LocalExtractor:
             logger.error("Extraction API call failed: %s", exc)
             raise ExtractionError(f"Anthropic API call failed: {exc}") from exc
 
+        truncated = response.stop_reason == "max_tokens"
+        if truncated:
+            logger.error(
+                "Extraction hit max_tokens limit (%d) — response truncated. "
+                "Attempting salvage. Consider increasing extraction_max_tokens.",
+                self._max_tokens,
+            )
+
         text = response.content[0].text if response.content else ""
-        extractions = _parse_response(text)
+        extractions = _parse_response(text, truncated=truncated)
         logger.info("Extracted %d facts from transcript", len(extractions))
-        if not extractions:
+        if truncated:
+            logger.warning("Truncated extraction yielded %d salvaged fact(s)", len(extractions))
+        elif not extractions:
             logger.debug("Empty extraction — raw response: %.300s", text)
         return extractions
 
 
 def create_extractor(config) -> "Extractor | LocalExtractor":
     """Return the right extractor based on config."""
+    max_tokens = config.extraction_max_tokens
     if config.anthropic_api_key:
-        logger.info("Using LocalExtractor (direct Anthropic API, model: claude-sonnet-4-6)")
-        return LocalExtractor(api_key=config.anthropic_api_key)
-    logger.info("Using Extractor (Vertex AI, model: %s)", config.vertex_model)
-    return Extractor(config.gcp_project, config.gcp_region, config.vertex_model)
+        logger.info("Using LocalExtractor (direct Anthropic API, model: claude-sonnet-4-6, max_tokens: %d)", max_tokens)
+        return LocalExtractor(api_key=config.anthropic_api_key, max_tokens=max_tokens)
+    logger.info("Using Extractor (Vertex AI, model: %s, max_tokens: %d)", config.vertex_model, max_tokens)
+    return Extractor(config.gcp_project, config.gcp_region, config.vertex_model, max_tokens=max_tokens)

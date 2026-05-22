@@ -85,9 +85,31 @@ class Conversation:
 
 
 @dataclass
+class BeeFact:
+    id: int
+    text: str
+    tags: list[str]
+    created_at_ms: int
+    confirmed: bool
+
+    @property
+    def date_str(self) -> str:
+        try:
+            dt = datetime.fromtimestamp(self.created_at_ms / 1000, tz=timezone.utc)
+            return dt.date().isoformat()
+        except Exception:
+            return datetime.now(tz=timezone.utc).date().isoformat()
+
+    @property
+    def id_str(self) -> str:
+        return str(self.id)
+
+
+@dataclass
 class ChangedResult:
     conversations: list[Conversation]
     next_cursor: Optional[str]
+    bee_facts: list[BeeFact] = field(default_factory=list)
 
 
 def _parse_conversation(raw: dict) -> Optional[Conversation]:
@@ -218,10 +240,24 @@ class BeeClient:
         # Oldest-first so pipeline advances state in chronological order
         conversations.sort(key=lambda c: c.start_time_ms)
 
+        bee_facts = []
+        for raw in data.get("facts", []):
+            try:
+                bee_facts.append(BeeFact(
+                    id=int(raw["id"]),
+                    text=str(raw.get("text", "")),
+                    tags=[str(t) for t in raw.get("tags", [])],
+                    created_at_ms=int(raw.get("created_at", 0)),
+                    confirmed=bool(raw.get("confirmed", False)),
+                ))
+            except Exception as exc:
+                logger.warning("Failed to parse bee fact %s: %s", raw.get("id"), exc)
+
         logger.info(
-            "bee changed: %d raw → %d usable conversations, next_cursor=%s",
+            "bee changed: %d raw conversations → %d usable, %d bee facts, next_cursor=%s",
             len(raw_conversations),
             len(conversations),
+            len(bee_facts),
             next_cursor,
         )
-        return ChangedResult(conversations=conversations, next_cursor=next_cursor)
+        return ChangedResult(conversations=conversations, next_cursor=next_cursor, bee_facts=bee_facts)
