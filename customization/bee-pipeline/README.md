@@ -116,34 +116,21 @@ bee changed --json | python -m json.tool | head -50
 cp .env.example .env
 # Fill in .env with real values (BEE_API_TOKEN, GBRAIN_URL, BEE_GBRAIN_CLIENT_*, GCS_BUCKET)
 
-source .env
-functions-framework --target run_pipeline --debug
-# Then POST to http://localhost:8080
+source .env && python main.py
+```
+
+For a dry run (no Brain writes, local cursor state):
+```bash
+source .env && python dry_run.py
 ```
 
 ## Deployment
 
-The Cloud Function container needs Python + Node.js. Use a custom Dockerfile or Cloud Build steps.
+The container needs Python + Node.js (for the Bee CLI). See the `Dockerfile` in this directory.
 
-### Dockerfile approach
-```dockerfile
-FROM python:3.12-slim
+### One-time setup
 
-# Install Node.js for Bee CLI
-RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @beeai/cli
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-CMD ["functions-framework", "--target=run_pipeline", "--port=8080"]
-```
-
-### Deploy to Cloud Run (recommended)
-
-**One-time setup** — create the Artifact Registry repository and configure Docker auth:
+Create the Artifact Registry repository and configure Docker auth:
 ```bash
 gcloud artifacts repositories create bee-brain-pipeline \
   --repository-format=docker \
@@ -153,32 +140,52 @@ gcloud artifacts repositories create bee-brain-pipeline \
 gcloud auth configure-docker us-central1-docker.pkg.dev
 ```
 
-**Build and deploy:**
+Grant the service account permission to execute the job (needed for Cloud Scheduler):
 ```bash
+gcloud projects add-iam-policy-binding dowd-assistant \
+  --member="serviceAccount:590600029741-compute@developer.gserviceaccount.com" \
+  --role="roles/run.invoker"
+```
+
+### Build and create the job
+
+```powershell
 $tag = git rev-parse --short HEAD
 $image = "us-central1-docker.pkg.dev/dowd-assistant/bee-brain-pipeline/pipeline:$tag"
 
-# Build + push to Artifact Registry
+# Build + push
 gcloud builds submit --tag $image --project=dowd-assistant customization/bee-pipeline
 
-gcloud run deploy bee-brain-pipeline `
+# Create the job (first deploy)
+gcloud run jobs create bee-brain-pipeline `
   --image $image `
   --region us-central1 `
-  --no-allow-unauthenticated `
   --service-account 590600029741-compute@developer.gserviceaccount.com `
   --set-env-vars "GCP_PROJECT=dowd-assistant,GCS_BUCKET=gbrain-storage-dowd-assistant,PENDING_REVIEW_ONLY=1" `
   --set-secrets "BEE_API_TOKEN=BEE_API_TOKEN:latest,GBRAIN_URL=GBRAIN_URL:latest,BEE_GBRAIN_CLIENT_ID=BEE_GBRAIN_CLIENT_ID:latest,BEE_GBRAIN_CLIENT_SECRET=BEE_GBRAIN_CLIENT_SECRET:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest" `
   --memory=512Mi `
-  --timeout=300s
+  --task-timeout=300s
+```
+
+On subsequent deploys, use `update` instead of `create`:
+```powershell
+gcloud run jobs update bee-brain-pipeline --image $image --region us-central1
+```
+
+To run manually at any time:
+```bash
+gcloud run jobs execute bee-brain-pipeline --region us-central1
 ```
 
 ### Cloud Scheduler trigger
+
 ```bash
-gcloud scheduler jobs create http bee-brain-pipeline-schedule `
-  --location=us-central1 `
-  --schedule="0 */4 * * *" `
-  --uri="https://bee-brain-pipeline-590600029741.us-central1.run.app" `
-  --oidc-service-account-email=590600029741-compute@developer.gserviceaccount.com
+gcloud scheduler jobs create http bee-brain-pipeline-schedule \
+  --location=us-central1 \
+  --schedule="0 */4 * * *" \
+  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/dowd-assistant/jobs/bee-brain-pipeline:run" \
+  --message-body="" \
+  --oauth-service-account-email=590600029741-compute@developer.gserviceaccount.com
 ```
 
 ## How It Works

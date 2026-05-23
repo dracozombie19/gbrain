@@ -1,13 +1,12 @@
-"""Cloud Function entry point for the Bee → Brain pipeline.
+"""Entry point for the Bee → Brain pipeline Cloud Run Job.
 
-Triggered by Cloud Scheduler every 4 hours via HTTP.
+Triggered by Cloud Scheduler every 4 hours via the Cloud Run Jobs API.
+Exits 0 on success (including partial errors), 1 on hard failure.
 """
 
 import json
 import logging
-import os
-import functions_framework
-from flask import Request
+import sys
 
 from pipeline.config import load_config
 from pipeline.orchestrator import Orchestrator
@@ -19,39 +18,44 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@functions_framework.http
-def run_pipeline(request: Request):
-    """HTTP Cloud Function entry point."""
+def main() -> int:
     logger.info("Bee → Brain pipeline triggered")
 
     try:
         config = load_config()
     except Exception as exc:
         logger.error("Config load failed: %s", exc)
-        return (json.dumps({"status": "error", "message": f"Config error: {exc}"}), 500)
+        return 1
 
     try:
         orchestrator = Orchestrator(config)
         summary = orchestrator.run()
     except Exception as exc:
         logger.exception("Pipeline run failed with unhandled exception")
-        return (
-            json.dumps({"status": "error", "message": str(exc)}),
-            500,
-            {"Content-Type": "application/json"},
-        )
+        return 1
 
-    result = {
-        "status": "ok",
-        "conversations_fetched": summary.conversations_fetched,
-        "conversations_processed": summary.conversations_processed,
-        "conversations_skipped": summary.conversations_skipped,
-        "facts_extracted": summary.facts_extracted,
-        "timeline_entries_written": summary.timeline_entries_written,
-        "pending_review_written": summary.pending_review_written,
-        "bee_facts_written": summary.bee_facts_written,
-        "errors": summary.errors,
-    }
+    logger.info(
+        "Run complete: fetched=%d processed=%d skipped=%d facts=%d "
+        "timeline=%d pending_review=%d bee_facts=%d errors=%d",
+        summary.conversations_fetched,
+        summary.conversations_processed,
+        summary.conversations_skipped,
+        summary.facts_extracted,
+        summary.timeline_entries_written,
+        summary.pending_review_written,
+        summary.bee_facts_written,
+        len(summary.errors),
+    )
 
-    status_code = 200 if not summary.errors else 207  # 207 = partial success
-    return (json.dumps(result), status_code, {"Content-Type": "application/json"})
+    if summary.errors:
+        logger.warning("Completed with %d error(s):", len(summary.errors))
+        for err in summary.errors:
+            logger.warning("  %s", err)
+
+    # Exit 0 even with partial errors — the cursor was saved and the job
+    # completed its work. Errors are logged above for visibility.
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
