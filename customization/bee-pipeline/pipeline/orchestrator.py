@@ -17,6 +17,48 @@ logger = logging.getLogger(__name__)
 # Slug-safe character replacement
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# Non-word characters for fact normalization
+_NONWORD_RE = re.compile(r"[^\w\s]")
+
+# Stop words to ignore when checking if a fact is already in a page
+_STOP_WORDS = {
+    "this", "that", "with", "have", "from", "they", "been", "were",
+    "will", "about", "when", "also", "some", "than", "more", "very",
+    "just", "into", "your", "which", "there", "their",
+}
+
+
+def _fact_key(subject: str, fact: str) -> str:
+    """Compute a deduplication fingerprint for a (subject, fact) pair.
+
+    Used to skip identical facts that appear in multiple conversations within
+    the same pipeline run.
+    """
+    subj = " ".join(_NONWORD_RE.sub(" ", subject.lower().strip()).split())
+    fact_short = " ".join(_NONWORD_RE.sub(" ", fact[:100].lower().strip()).split())
+    return f"{subj}||{fact_short}"
+
+
+def _fact_in_page(fact: str, page: dict) -> bool:
+    """Check whether the key words from fact are already present in a Brain page.
+
+    Returns True when ≥70% of the fact's meaningful words appear in the page
+    body or frontmatter — a heuristic that catches "Ashley is Zac's wife" when
+    the page already says "married to Zac Dowd" or has spouse in frontmatter.
+    """
+    body = page.get("body", "") or ""
+    frontmatter = page.get("frontmatter", {}) or {}
+    fm_text = " ".join(str(v) for v in frontmatter.values() if v)
+    content = _NONWORD_RE.sub(" ", (body + " " + fm_text).lower())
+
+    fact_clean = _NONWORD_RE.sub(" ", fact.lower())
+    words = [w for w in fact_clean.split() if len(w) > 3 and w not in _STOP_WORDS]
+    if not words:
+        return False
+
+    matches = sum(1 for w in words if w in content)
+    return matches / len(words) >= 0.7
+
 
 def _slugify(text: str, max_len: int = 40) -> str:
     normalized = text.lower().strip()
@@ -163,9 +205,12 @@ class Orchestrator:
         self._extractor = extractor if extractor is not None else create_extractor(config)
         self._resolver = Resolver(self._brain)
         self._state = state if state is not None else create_state_manager(config)
+        # In-run deduplication: tracks (subject, fact) fingerprints seen this run
+        self._seen_fact_keys: set[str] = set()
 
     def run(self) -> RunSummary:
         summary = RunSummary()
+        self._seen_fact_keys = set()  # reset per run
 
         state = self._state.load()
         self._resolver.load()
@@ -257,6 +302,17 @@ class Orchestrator:
         summary: RunSummary,
         transcript: str = "",
     ) -> None:
+        # In-run dedup: skip if this (subject, fact) pair was already processed
+        # in an earlier conversation of this batch.
+        key = _fact_key(ext.subject_name, ext.fact)
+        if key in self._seen_fact_keys:
+            logger.info(
+                "Skipping duplicate fact (already processed in this run): %s — %s",
+                ext.subject_name, ext.fact[:60],
+            )
+            return
+        self._seen_fact_keys.add(key)
+
         resolve = self._resolver.resolve(ext.subject_name, ext.entity_type)
 
         high_confidence = (
@@ -294,11 +350,20 @@ class Orchestrator:
     ) -> None:
         # Verify the page still exists — it should, since the resolver loaded
         # aliases from Brain at startup, but guard against race conditions.
-        if self._brain.get_page(slug) is None:
+        page = self._brain.get_page(slug)
+        if page is None:
             logger.warning(
                 "Resolved slug %s has no Brain page — routing to pending-review", slug
             )
             self._write_pending_review(ext, resolve, conv, conv_date, idx, summary)
+            return
+
+        # Cross-run dedup: skip if the fact is already captured on this entity's page.
+        if _fact_in_page(ext.fact, page):
+            logger.info(
+                "Fact already present on %s — skipping timeline entry: %s",
+                slug, ext.fact[:60],
+            )
             return
 
         source = f"bee:{conv.id_str}"
