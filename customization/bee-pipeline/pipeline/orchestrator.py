@@ -207,12 +207,15 @@ class Orchestrator:
         self._state = state if state is not None else create_state_manager(config)
         # In-run deduplication: tracks (subject, fact) fingerprints seen this run
         self._seen_fact_keys: set[str] = set()
+        # Cross-run deduplication: Bee fact IDs written in any prior run
+        self._seen_bee_fact_ids: set[int] = set()
 
     def run(self) -> RunSummary:
         summary = RunSummary()
         self._seen_fact_keys = set()  # reset per run
 
         state = self._state.load()
+        self._seen_bee_fact_ids = set(state.seen_bee_fact_ids)
         self._resolver.load()
 
         fetched_at = datetime.now(timezone.utc).isoformat()
@@ -236,7 +239,7 @@ class Orchestrator:
         if not conversations and not bee_facts:
             logger.info("No new data — nothing to process")
             if next_cursor and next_cursor != state.cursor:
-                self._state.save(next_cursor, fetched_at)
+                self._state.save(next_cursor, fetched_at, list(self._seen_bee_fact_ids))
             return summary
 
         for conv in conversations:
@@ -246,8 +249,8 @@ class Orchestrator:
         for fact in bee_facts:
             self._write_bee_fact(fact, summary)
 
-        # Save cursor only after all conversations processed successfully
-        self._state.save(next_cursor, fetched_at)
+        # Save cursor and seen Bee fact IDs after all processing
+        self._state.save(next_cursor, fetched_at, list(self._seen_bee_fact_ids))
 
         logger.info(
             "Run complete: %d processed, %d timeline entries, %d pending-review, %d bee facts",
@@ -409,6 +412,10 @@ class Orchestrator:
             raise
 
     def _write_bee_fact(self, fact: BeeFact, summary: RunSummary) -> None:
+        if fact.id in self._seen_bee_fact_ids:
+            logger.info("Skipping already-processed Bee fact %s: %s", fact.id, fact.text[:60])
+            return
+
         slug = _bee_fact_pending_review_slug(fact)
         content = _bee_fact_pending_review_content(fact)
         try:
@@ -417,6 +424,7 @@ class Orchestrator:
             self._brain.add_tag(slug, "bee-fact")
             logger.info("Bee fact pending-review written: %s (id=%s)", slug, fact.id)
             summary.bee_facts_written += 1
+            self._seen_bee_fact_ids.add(fact.id)
         except BrainError as exc:
             logger.error("Failed to write Bee fact page %s: %s", slug, exc)
             summary.errors.append(f"Bee fact write error for {fact.id}: {exc}")
