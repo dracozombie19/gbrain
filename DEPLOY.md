@@ -252,11 +252,14 @@ From the repo root on the `personal-deploy` branch:
 
 ```powershell
 # Tag the image with the current git SHA so each Cloud Run revision traces back to an exact commit
+$uri = "us-central1-docker.pkg.dev/dowd-assistant/gbrain-repo/gbrain-server"
 $tag = git rev-parse --short HEAD
-$image = "us-central1-docker.pkg.dev/dowd-assistant/gbrain-repo/gbrain-server:$tag"
+$image = "$uri`:$tag"
 
 # Build + push to Artifact Registry
 gcloud builds submit --tag $image --project=dowd-assistant .
+gcloud artifacts docker tags add "$image" "$uri`:latest" --project=dowd-assistant
+
 
 # Deploy to Cloud Run
 gcloud run deploy gbrain-server `

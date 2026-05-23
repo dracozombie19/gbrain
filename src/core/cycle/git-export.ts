@@ -195,32 +195,62 @@ export async function runPhaseGitPush(
 
   try {
     // ── Export all pages from DB to the temp dir ──────────────────
+    // Fetch pages in batches to avoid 2×N sequential round-trips.
+    // Within each batch, getPage + getTags run concurrently per page.
+    // Batch size of 50 means at most 100 in-flight queries — well within
+    // the default Postgres pool and not a problem for PGLite.
+    const EXPORT_BATCH_SIZE = 50;
     const refs = await engine.listAllPageRefs();
     let exported = 0;
+    const writtenPaths = new Set<string>();
 
-    for (const { slug, source_id } of refs) {
-      const page = await engine.getPage(slug, { sourceId: source_id });
-      if (!page) continue;
-      const tags = await engine.getTags(slug, { sourceId: source_id });
-
-      const md = serializeMarkdown(
-        (page.frontmatter ?? {}) as Record<string, unknown>,
-        page.compiled_truth ?? '',
-        page.timeline ?? '',
-        { type: page.type ?? 'note', title: page.title ?? slug, tags },
+    for (let i = 0; i < refs.length; i += EXPORT_BATCH_SIZE) {
+      const batch = refs.slice(i, i + EXPORT_BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map(({ slug, source_id }) =>
+          Promise.all([
+            engine.getPage(slug, { sourceId: source_id }),
+            engine.getTags(slug, { sourceId: source_id }),
+          ]).then(([page, tags]) => ({ slug, source_id, page, tags })),
+        ),
       );
 
-      // Mirror the disk layout from synthesize.ts: non-default sources go
-      // under .sources/<id>/ so same-slug pages from different sources don't
-      // overwrite each other.
-      const filePath =
-        source_id && source_id !== 'default'
-          ? join(tempDir, '.sources', source_id, `${slug}.md`)
-          : join(tempDir, `${slug}.md`);
+      for (const { slug, source_id, page, tags } of results) {
+        if (!page) continue;
 
-      mkdirSync(dirname(filePath), { recursive: true });
-      writeFileSync(filePath, md, 'utf-8');
-      exported++;
+        const md = serializeMarkdown(
+          (page.frontmatter ?? {}) as Record<string, unknown>,
+          page.compiled_truth ?? '',
+          page.timeline ?? '',
+          { type: page.type ?? 'note', title: page.title ?? slug, tags },
+        );
+
+        // Mirror the disk layout from synthesize.ts: non-default sources go
+        // under .sources/<id>/ so same-slug pages from different sources don't
+        // overwrite each other.
+        const filePath =
+          source_id && source_id !== 'default'
+            ? join(tempDir, '.sources', source_id, `${slug}.md`)
+            : join(tempDir, `${slug}.md`);
+
+        mkdirSync(dirname(filePath), { recursive: true });
+        writeFileSync(filePath, md, 'utf-8');
+        writtenPaths.add(filePath);
+        exported++;
+      }
+    }
+
+    // Remove any tracked files no longer in the brain so deletions are
+    // reflected in the push (git add . stages removals for missing files).
+    const { stdout: lsOut } = await execFileAsync('git', ['-C', tempDir, 'ls-files']);
+    const trackedRels = lsOut.split('\n').filter(Boolean);
+    let deleted = 0;
+    for (const rel of trackedRels) {
+      const abs = join(tempDir, rel);
+      if (!writtenPaths.has(abs)) {
+        if (!dryRun) rmSync(abs);
+        deleted++;
+      }
     }
 
     if (dryRun) {
@@ -228,8 +258,8 @@ export async function runPhaseGitPush(
         phase: 'git_push',
         status: 'ok',
         duration_ms: 0,
-        summary: `dry-run: would export ${exported} page(s) and push`,
-        details: { exported, dry_run: true },
+        summary: `dry-run: would export ${exported} page(s), delete ${deleted} stale file(s), and push`,
+        details: { exported, deleted, dry_run: true },
       };
     }
 
