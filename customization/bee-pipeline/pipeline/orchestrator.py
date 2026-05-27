@@ -159,6 +159,75 @@ def _bee_fact_pending_review_slug(fact: "BeeFact") -> str:
     return f"pending-review/bee-fact-{fact.id}"
 
 
+def _memory_slug(conv_date: str, subject_name: str) -> str:
+    return f"memories/{conv_date}-{_slugify(subject_name, max_len=45)}"
+
+
+def _memory_content(
+    ext: Extraction, conv_id: str, conv_date: str,
+    transcript: str = "", linked: list[tuple[str, str]] | None = None,
+) -> str:
+    title = ext.fact[:80].replace("\n", " ")
+    display_snippet = (
+        _expand_snippet(transcript, ext.transcript_snippet)
+        if transcript
+        else ext.transcript_snippet
+    )
+    snippet_block = _format_snippet_blockquote(display_snippet)
+    links_line = ""
+    if linked:
+        links_md = ", ".join(f"[{name}]({slug})" for name, slug in linked)
+        links_line = f"\n**People & places**: {links_md}\n"
+    return (
+        f"---\n"
+        f"title: \"{title}\"\n"
+        f"type: note\n"
+        f"tags: [memory, bee-extracted, bee-unreviewed]\n"
+        f"bee_conversation_id: \"{conv_id}\"\n"
+        f"memory_date: \"{conv_date}\"\n"
+        f"---\n"
+        f"{ext.fact}\n"
+        f"{links_line}"
+        f"\n**Source snippet**:\n\n{snippet_block}\n"
+    )
+
+
+def _action_item_slug(conv_date: str, subject_name: str) -> str:
+    return f"tasks/{conv_date}-{_slugify(subject_name, max_len=45)}"
+
+
+def _action_item_content(
+    ext: Extraction, conv_id: str, conv_date: str,
+    transcript: str = "", linked: list[tuple[str, str]] | None = None,
+) -> str:
+    title = ext.fact[:80].replace("\n", " ")
+    due_line = f"due_date: \"{ext.due_date}\"\n" if ext.due_date else ""
+    display_snippet = (
+        _expand_snippet(transcript, ext.transcript_snippet)
+        if transcript
+        else ext.transcript_snippet
+    )
+    snippet_block = _format_snippet_blockquote(display_snippet)
+    links_line = ""
+    if linked:
+        links_md = ", ".join(f"[{name}]({slug})" for name, slug in linked)
+        links_line = f"\n**People & places**: {links_md}\n"
+    return (
+        f"---\n"
+        f"title: \"{title}\"\n"
+        f"type: note\n"
+        f"tags: [task, bee-extracted, bee-unreviewed]\n"
+        f"status: open\n"
+        f"bee_conversation_id: \"{conv_id}\"\n"
+        f"created_date: \"{conv_date}\"\n"
+        f"{due_line}"
+        f"---\n"
+        f"{ext.fact}\n"
+        f"{links_line}"
+        f"\n**Source snippet**:\n\n{snippet_block}\n"
+    )
+
+
 def _bee_fact_pending_review_content(fact: "BeeFact") -> str:
     title = fact.text[:60].replace("\n", " ")
     tags_str = ", ".join(fact.tags) if fact.tags else "general"
@@ -185,6 +254,8 @@ class RunSummary:
     conversations_processed: int = 0
     facts_extracted: int = 0
     timeline_entries_written: int = 0
+    memories_written: int = 0
+    action_items_written: int = 0
     pending_review_written: int = 0
     bee_facts_written: int = 0
     errors: list[str] = field(default_factory=list)
@@ -310,11 +381,20 @@ class Orchestrator:
         key = _fact_key(ext.subject_name, ext.fact)
         if key in self._seen_fact_keys:
             logger.info(
-                "Skipping duplicate fact (already processed in this run): %s — %s",
+                "Skipping duplicate (already processed in this run): %s — %s",
                 ext.subject_name, ext.fact[:60],
             )
             return
         self._seen_fact_keys.add(key)
+
+        # Memories and action items bypass entity resolution — they have their
+        # own namespaces and don't need a confidence gate.
+        if ext.entity_type == "memory":
+            self._write_memory(ext, conv, conv_date, summary, transcript)
+            return
+        if ext.entity_type == "action_item":
+            self._write_action_item(ext, conv, conv_date, summary, transcript)
+            return
 
         resolve = self._resolver.resolve(ext.subject_name, ext.entity_type)
 
@@ -384,6 +464,73 @@ class Orchestrator:
             summary.timeline_entries_written += 1
         except BrainError as exc:
             logger.error("Failed to write timeline entry to %s: %s", slug, exc)
+            raise
+
+    def _resolve_participants(self, participants: list[str]) -> list[tuple[str, str]]:
+        """Resolve participant names to (name, slug) pairs. Skips unresolvable names."""
+        linked: list[tuple[str, str]] = []
+        for name in participants:
+            result = self._resolver.resolve(name, "person")
+            if result.slug:
+                linked.append((name, result.slug))
+                logger.debug("Participant %r resolved to %s", name, result.slug)
+            else:
+                logger.debug("Participant %r could not be resolved — skipping link", name)
+        return linked
+
+    def _write_memory(
+        self,
+        ext: Extraction,
+        conv: Conversation,
+        conv_date: str,
+        summary: RunSummary,
+        transcript: str = "",
+    ) -> None:
+        slug = _memory_slug(conv_date, ext.subject_name)
+        linked = self._resolve_participants(ext.participants)
+        content = _memory_content(ext, conv.id_str, conv_date, transcript, linked)
+        try:
+            self._brain.put_page(slug, content)
+            self._brain.add_tag(slug, "memory")
+            self._brain.add_tag(slug, "bee-extracted")
+            self._brain.add_tag(slug, "bee-unreviewed")
+            for _name, entity_slug in linked:
+                try:
+                    self._brain.add_link(slug, entity_slug, "mentions")
+                except BrainError as exc:
+                    logger.warning("Could not add link %s → %s: %s", slug, entity_slug, exc)
+            logger.info("Memory written: %s — %s", slug, ext.fact[:60])
+            summary.memories_written += 1
+        except BrainError as exc:
+            logger.error("Failed to write memory page %s: %s", slug, exc)
+            raise
+
+    def _write_action_item(
+        self,
+        ext: Extraction,
+        conv: Conversation,
+        conv_date: str,
+        summary: RunSummary,
+        transcript: str = "",
+    ) -> None:
+        slug = _action_item_slug(conv_date, ext.subject_name)
+        linked = self._resolve_participants(ext.participants)
+        content = _action_item_content(ext, conv.id_str, conv_date, transcript, linked)
+        due_info = f" (due: {ext.due_date})" if ext.due_date else ""
+        try:
+            self._brain.put_page(slug, content)
+            self._brain.add_tag(slug, "task")
+            self._brain.add_tag(slug, "bee-extracted")
+            self._brain.add_tag(slug, "bee-unreviewed")
+            for _name, entity_slug in linked:
+                try:
+                    self._brain.add_link(slug, entity_slug, "mentions")
+                except BrainError as exc:
+                    logger.warning("Could not add link %s → %s: %s", slug, entity_slug, exc)
+            logger.info("Action item written: %s — %s%s", slug, ext.fact[:60], due_info)
+            summary.action_items_written += 1
+        except BrainError as exc:
+            logger.error("Failed to write action item page %s: %s", slug, exc)
             raise
 
     def _write_pending_review(

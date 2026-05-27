@@ -204,6 +204,12 @@ class BrainClient:
     def add_tag(self, slug: str, tag: str) -> None:
         self._call("add_tag", slug=slug, tag=tag)
 
+    def remove_tag(self, slug: str, tag: str) -> None:
+        self._call("remove_tag", slug=slug, tag=tag)
+
+    def add_link(self, from_slug: str, to_slug: str, link_type: str = "mentions") -> None:
+        self._call("add_link", **{"from": from_slug, "to": to_slug, "link_type": link_type})
+
     def list_pages(
         self,
         tag: str | None = None,
@@ -281,6 +287,12 @@ class DryRunBrainClient:
 
     def add_tag(self, slug: str, tag: str) -> None:
         logger.info("[DRY RUN] Would add_tag slug=%s tag=%s", slug, tag)
+
+    def remove_tag(self, slug: str, tag: str) -> None:
+        logger.info("[DRY RUN] Would remove_tag slug=%s tag=%s", slug, tag)
+
+    def add_link(self, from_slug: str, to_slug: str, link_type: str = "mentions") -> None:
+        logger.info("[DRY RUN] Would add_link from=%s to=%s link_type=%s", from_slug, to_slug, link_type)
 
 
 def create_brain_client(config) -> "BrainClient | DryRunBrainClient":

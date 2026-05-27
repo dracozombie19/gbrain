@@ -16,11 +16,11 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
-You are a fact extraction assistant. You will be given a transcript of an ambient conversation \
-recorded via a wearable device. These transcripts are captured passively — they rarely have \
-speaker labels, may contain ASR noise or repeated segments, and speakers are usually unnamed. \
-Your task is to extract durable facts about people, pets, companies, technologies, places, \
-media, and projects mentioned in the conversation.
+You are a knowledge extraction assistant. You will be given a transcript of an ambient \
+conversation recorded via a wearable device. These transcripts are captured passively — they \
+rarely have speaker labels, may contain ASR noise or repeated segments, and speakers are \
+usually unnamed. Your task is to extract facts, memories, and action items worth preserving \
+for future recall.
 
 ENTITY TYPES — every extraction must include an entity_type field:
 - "person": an individual human
@@ -30,8 +30,10 @@ ENTITY TYPES — every extraction must include an entity_type field:
 - "place": a named or memorable physical location
 - "media": a book, film, TV show, podcast, or article
 - "project": a named initiative, build, or renovation
+- "memory": a notable moment, experience, or episode worth preserving
+- "action_item": something that needs to be done or followed up on
 
-DURABLE facts to extract by entity type:
+WHAT TO EXTRACT by entity type:
 
 person:
 - Biographical facts: birthdays, relationships, occupations, where someone lives
@@ -42,6 +44,13 @@ person:
 - Worldview and values: religious beliefs, deeply held convictions, identity-level opinions
 - Opinions on topics (politics, culture, ideas) that reveal character or persistent beliefs
 - Relationship context: how people know each other
+- For children (under ~5 years old): developmental milestones, physical details, and \
+  contextual facts even if they'll only be true for a few months. Childhood changes fast — \
+  capture the texture of this stage. Examples: clothing sizes, foods they've just discovered, \
+  skills recently acquired, funny habits, height/weight, how they're sleeping, what they're \
+  saying, quirky details that will be interesting to look back on.
+- EXTRACT even if not "forever durable" for children: "Ella still fits in her 0-3 month \
+  outfit at 9 months", "James is going through a phase of only eating beige foods"
 
 pet:
 - Species, breed, age, health conditions, dietary needs
@@ -89,18 +98,51 @@ from TCS to Ascendion for managed IT services")
 - subject_name: use the project's name or a short descriptive phrase (e.g. "the Ascendion \
 migration", "the SAP upgrade", "the kitchen renovation")
 - SKIP: project timelines, deadlines, budgets, and status updates ("goes live in Q4")
-- SKIP: one-off task assignments or meeting action items
 
-SITUATIONAL facts to SKIP (do not extract):
-- Project timelines, meeting logistics, task assignments
+memory:
+- Notable moments, experiences, or episodes worth preserving — things you'd want to look \
+  back on in a year or five years
+- EXTRACT: firsts and milestones ("Ella swam for the first time", "James tried sushi")
+- EXTRACT: funny, sweet, or surprising moments that capture a period of life
+- EXTRACT: meaningful family or personal experiences (trips, celebrations, shared moments)
+- EXTRACT: observations that will only be true for a short window ("at 9 months, Ella \
+  still fits in the 0-3 month outfit we use for her monthly photos — makes the photos funnier \
+  every month")
+- subject_name: a short phrase describing what the memory is about (e.g. "Ella's first swim", \
+  "family walk at Wild Lake Sanctuary", "James tries sushi for the first time")
+- fact: write as a complete sentence capturing the moment and its context
+- SKIP: routine everyday activities with nothing remarkable about them
+- SKIP: moments you'd only care about for the next day or two with no lasting significance
+
+action_item:
+- Things that need to be done, followed up on, or remembered to act on
+- EXTRACT: clear tasks with an identifiable action ("call the pediatrician to schedule \
+  Ella's 9-month checkup", "order more formula", "text Sarah about the playdate")
+- EXTRACT: time-sensitive reminders, especially when a date or timeframe is mentioned \
+  ("pick up the photos before Friday", "renew the car registration before end of month")
+- EXTRACT: follow-ups from conversations ("circle back with James's teacher about the \
+  reading program next week")
+- subject_name: a short phrase describing the task (e.g. "schedule Ella's checkup", \
+  "pick up photos")
+- fact: write the action item as a clear, actionable sentence
+- due_date: include if a specific date or timeframe was mentioned (YYYY-MM-DD if exact; \
+  natural language like "end of week" or "before Friday" if relative; null if not mentioned
+- SKIP: vague intentions with no clear action ("we should do that sometime")
+- SKIP: professional meeting logistics with no personal follow-up needed
+
+SITUATIONAL facts to SKIP (for entity types person, pet, company, technology, place, media, project):
 - Temporary emotional states ("she seemed tired today")
 - One-time logistical complaints ("the service was slow tonight")
-- Anything that would only matter in the next few days
+- Work meeting logistics with no lasting relevance
+- Anything clearly only relevant for the next 24-48 hours and with no lasting significance
+- NOTE: action items and memories have their own types above — use those instead of skipping
 
-OPINION THRESHOLD — ask: would this still be true about this person next year?
+OPINION THRESHOLD for person type — ask: would this be interesting to recall in 3-6 months?
 - EXTRACT: "Ashley doesn't like Taco Bell" → food preference, likely stable
 - EXTRACT: "He thinks the immigration policy is wrong" → persistent political view
 - EXTRACT: "She loves hiking" → hobby/preference
+- EXTRACT (for children): "Ella still fits in the 0-3 month outfit at 9 months" → \
+  developmental/contextual detail, worth capturing even though it'll change
 - SKIP: "She's skeptical about the project timeline" → situational work concern
 - SKIP: "He said the meeting ran too long" → one-time complaint
 - EXTRACT if repeated or stated as general preference; SKIP if clearly a one-time reaction
@@ -125,22 +167,29 @@ Use LOW confidence only when the fact itself is ambiguous — e.g. it's unclear 
 the health fact refers to James or another person, or whether the name could match \
 multiple entities. The absence of speaker labels does NOT, by itself, lower confidence.
 
+For memory and action_item types: attribution_confidence refers to how clearly the \
+memory or task is stated in the transcript, not to speaker identity. name_ambiguous \
+should be false for these types unless there is genuine ambiguity about which person \
+or event is being referenced.
+
 name_ambiguous: true if the name as spoken could plausibly match more than one entity \
 in context (e.g. pronouns only, very common first names with no other context, \
 generic terms like "the vendor").
 
-For each extracted fact, respond with a JSON array of extraction objects. \
-If no durable facts are present, return an empty array [].
+For each extracted item, respond with a JSON array of extraction objects. \
+If nothing worth extracting is present, return an empty array [].
 
 Each extraction object must have exactly these fields:
 {
-  "fact": "string — the durable fact in clear, timeless language",
-  "subject_name": "string — the entity's name as spoken (e.g. 'James', 'Bunny', 'Wild Lake Sanctuary')",
-  "entity_type": "person | pet | company | technology | place | media | project",
+  "fact": "string — the fact, memory, or action item in clear language",
+  "subject_name": "string — entity name or short phrase describing what this is about",
+  "entity_type": "person | pet | company | technology | place | media | project | memory | action_item",
   "attribution_confidence": "high | medium | low",
-  "attribution_reasoning": "string — brief explanation of confidence in the fact about the subject",
+  "attribution_reasoning": "string — brief explanation of confidence",
   "name_ambiguous": true | false,
-  "transcript_snippet": "string — 1-3 sentence verbatim excerpt supporting this extraction"
+  "transcript_snippet": "string — 1-3 sentence verbatim excerpt supporting this extraction",
+  "due_date": "YYYY-MM-DD or short phrase or null — only for action_item type; null for all others",
+  "participants": ["list of entity names (people, pets, places) involved — for memory and action_item types only; empty array for all other types"]
 }
 
 Return ONLY valid JSON — no markdown fences, no explanation text, just the array."""
@@ -150,11 +199,13 @@ Return ONLY valid JSON — no markdown fences, no explanation text, just the arr
 class Extraction:
     fact: str
     subject_name: str
-    entity_type: str             # "person" | "pet" | "company" | "technology" | "place" | "media" | "project"
+    entity_type: str             # "person" | "pet" | "company" | "technology" | "place" | "media" | "project" | "memory" | "action_item"
     attribution_confidence: str  # "high" | "medium" | "low"
     attribution_reasoning: str
     name_ambiguous: bool
     transcript_snippet: str
+    due_date: str | None = None          # only for action_item type
+    participants: list[str] = field(default_factory=list)  # entity names involved; memory and action_item types only
 
 
 def _salvage_truncated_json(text: str) -> list | None:
@@ -217,6 +268,13 @@ def _parse_response(text: str, truncated: bool = False) -> list[Extraction]:
         if not isinstance(item, dict):
             continue
         try:
+            raw_due = item.get("due_date")
+            due_date = str(raw_due) if raw_due and str(raw_due).lower() not in ("null", "none", "") else None
+            raw_participants = item.get("participants", [])
+            participants = [
+                str(p).strip() for p in raw_participants
+                if isinstance(p, str) and str(p).strip()
+            ] if isinstance(raw_participants, list) else []
             extractions.append(Extraction(
                 fact=str(item["fact"]),
                 subject_name=str(item["subject_name"]),
@@ -225,6 +283,8 @@ def _parse_response(text: str, truncated: bool = False) -> list[Extraction]:
                 attribution_reasoning=str(item.get("attribution_reasoning", "")),
                 name_ambiguous=bool(item.get("name_ambiguous", True)),
                 transcript_snippet=str(item.get("transcript_snippet", "")),
+                due_date=due_date,
+                participants=participants,
             ))
         except (KeyError, TypeError) as exc:
             logger.warning("Skipping malformed extraction item (%s): %s", exc, item)
