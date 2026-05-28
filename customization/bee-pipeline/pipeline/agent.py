@@ -240,7 +240,7 @@ Source on all timeline entries: bee:{conv_id}
 - **Ella Dowd** (people/elowen-dowd) — Zac's infant daughter. "the baby", "she" in baby \
 context → Ella. Capture her developmental details generously.
 - **James Dowd** (people/james-dowd) — Zac's son. "my son", "the boy" → James.
-- Zac Dowd is the wearer — facts explicitly about him go on his own page.
+- **Zac Dowd** (people/zac-dowd) — the wearer. Facts explicitly about him go here.
 """
 
 _PENDING_REVIEW_OVERRIDE = """
