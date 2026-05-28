@@ -164,7 +164,7 @@ gcloud run jobs create bee-brain-pipeline `
   --set-env-vars "GCP_PROJECT=dowd-assistant,GCS_BUCKET=gbrain-storage-dowd-assistant,PENDING_REVIEW_ONLY=1" `
   --set-secrets "BEE_API_TOKEN=BEE_API_TOKEN:latest,GBRAIN_URL=GBRAIN_URL:latest,BEE_GBRAIN_CLIENT_ID=BEE_GBRAIN_CLIENT_ID:latest,BEE_GBRAIN_CLIENT_SECRET=BEE_GBRAIN_CLIENT_SECRET:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest" `
   --memory=512Mi `
-  --task-timeout=300s
+  --task-timeout=1800s
 ```
 
 On subsequent deploys, use `update` instead of `create`:
