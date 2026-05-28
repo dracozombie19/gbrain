@@ -40,3 +40,4 @@ test/fixtures/pglite-snapshot.tar
 test/fixtures/pglite-snapshot.version
 __pycache__/
 customization/bee-pipeline/bee-pipeline-state.json
+customization/bee-pipeline/bee-full-sync-progress.json

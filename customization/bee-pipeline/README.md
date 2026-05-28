@@ -44,20 +44,20 @@ Write-Host $token
 ```
 
 Verify it works:
-```bash
-echo $token | bee login --token-stdin
+```powershell
+Write-Output $token | bee login --token-stdin
 bee status
 ```
 
 ## Prerequisites
 
 1. **Brain running with `--http`** on the `personal-deploy` branch:
-   ```bash
+   ```powershell
    gbrain serve --http --port 9090
    ```
 
 2. **OAuth client registered** for the pipeline:
-   ```bash
+   ```powershell
    gbrain auth register-client bee-pipeline --scopes read write
    ```
    Note the `client_id` and `client_secret` — you'll need them.
@@ -67,12 +67,12 @@ bee status
 4. **GCS bucket** for state storage (any existing bucket; pipeline writes to `bee-pipeline/` prefix).
 
 5. **Secret Manager secrets** created:
-   ```bash
-   echo -n "YOUR_TOKEN"         | gcloud secrets create BEE_API_TOKEN --data-file=-
-   echo -n "YOUR_BRAIN_URL"     | gcloud secrets create BRAIN_URL --data-file=-
-   echo -n "YOUR_CLIENT_ID"     | gcloud secrets create BRAIN_CLIENT_ID --data-file=-
-   echo -n "YOUR_SECRET"        | gcloud secrets create BRAIN_CLIENT_SECRET --data-file=-
-   echo -n "sk-ant-..."         | gcloud secrets create ANTHROPIC_API_KEY --data-file=-
+   ```powershell
+   "YOUR_TOKEN"     | gcloud secrets create BEE_API_TOKEN --data-file=-
+   "YOUR_BRAIN_URL" | gcloud secrets create BRAIN_URL --data-file=-
+   "YOUR_CLIENT_ID" | gcloud secrets create BRAIN_CLIENT_ID --data-file=-
+   "YOUR_SECRET"    | gcloud secrets create BRAIN_CLIENT_SECRET --data-file=-
+   "sk-ant-..."     | gcloud secrets create ANTHROPIC_API_KEY --data-file=-
    ```
 
 6. **Service account permissions**:
@@ -82,9 +82,10 @@ bee status
 ## Alias Setup
 
 Run this once after Brain is running to add aliases to family pages:
-```bash
-GBRAIN_URL=http://localhost:9090 \
-BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... \
+```powershell
+$env:GBRAIN_URL = "http://localhost:9090"
+$env:BEE_GBRAIN_CLIENT_ID = "..."
+$env:BEE_GBRAIN_CLIENT_SECRET = "..."
 python update_aliases.py
 ```
 
@@ -93,36 +94,95 @@ The resolver uses these aliases to map spoken names (e.g. "Ashley", "Mama") to B
 ## Local Testing
 
 ### Test Brain client
-```bash
+```powershell
 cd customization/bee-pipeline
 pip install -r requirements.txt
 
-GBRAIN_URL=http://localhost:9090 \
-BEE_GBRAIN_CLIENT_ID=... BEE_GBRAIN_CLIENT_SECRET=... \
+$env:GBRAIN_URL = "http://localhost:9090"
+$env:BEE_GBRAIN_CLIENT_ID = "..."
+$env:BEE_GBRAIN_CLIENT_SECRET = "..."
 python test_brain_client.py
 ```
 
 ### Test Bee CLI
-```bash
+```powershell
 # Authenticate
-echo $YOUR_TOKEN | bee login --token-stdin
+Write-Output $YOUR_TOKEN | bee login --token-stdin
 
-# Fetch conversations
-bee changed --json | python -m json.tool | head -50
+# Fetch conversations (first 50 lines)
+bee changed --json | python -m json.tool | Select-Object -First 50
 ```
 
 ### Run pipeline locally
-```bash
-cp .env.example .env
-# Fill in .env with real values (BEE_API_TOKEN, GBRAIN_URL, BEE_GBRAIN_CLIENT_*, GCS_BUCKET)
 
-source .env && python main.py
+Copy and fill in the env file:
+```powershell
+Copy-Item .env.example .env
+# Edit .env with real values: BEE_API_TOKEN, GBRAIN_URL, BEE_GBRAIN_CLIENT_*, GCS_BUCKET
+```
+
+Load env and run:
+```powershell
+function Import-DotEnv {
+    param([string]$Path = ".env")
+    Get-Content $Path | ForEach-Object {
+        if ($_ -match '^\s*([^#][^=]+?)\s*=\s*(.*)\s*$') {
+            Set-Item "Env:$($matches[1])" $matches[2].Trim('"').Trim("'")
+        }
+    }
+}
+Import-DotEnv
+python main.py
 ```
 
 For a dry run (no Brain writes, local cursor state):
-```bash
-source .env && python dry_run.py
+```powershell
+python dry_run.py
 ```
+
+### Full historical sync (one-time backfill)
+
+The ongoing pipeline uses a cursor to fetch only new conversations. For a
+one-time backfill of all historical Bee data, use `full_sync.py`. It exports
+everything via `bee sync` (output layout: `conversations/YYYY-MM-DD/*.md`), parses
+the markdown output, and runs each conversation through the same agent pipeline.
+
+Load env first (same snippet as above), then:
+
+**First run — safe mode (all extractions to pending-review, no Brain writes):**
+```powershell
+python full_sync.py --pending-review-only --dry-run
+```
+
+**First run — write to pending-review for triage:**
+```powershell
+python full_sync.py --pending-review-only
+```
+
+**After triaging pending-review and satisfied with quality:**
+```powershell
+python full_sync.py --no-resume
+```
+
+**Other useful flags:**
+```powershell
+# Use an existing bee sync output directory (skip re-running bee sync)
+python full_sync.py --sync-dir C:\path\to\bee-sync-output
+
+# Only process conversations from a specific date onwards
+python full_sync.py --since 2025-01-01
+
+# Process a small batch to test (resume naturally on re-run)
+python full_sync.py --limit 20
+
+# Reprocess everything, ignoring the progress file
+python full_sync.py --no-resume
+```
+
+Progress is saved to `.\bee-full-sync-progress.json` after each conversation.
+The script is safe to interrupt and re-run — already-processed conversations
+are skipped automatically. Delete the progress file (or use `--no-resume`) to
+start fresh.
 
 ## Deployment
 
@@ -131,19 +191,19 @@ The container needs Python + Node.js (for the Bee CLI). See the `Dockerfile` in 
 ### One-time setup
 
 Create the Artifact Registry repository and configure Docker auth:
-```bash
-gcloud artifacts repositories create bee-brain-pipeline \
-  --repository-format=docker \
-  --location=us-central1 \
+```powershell
+gcloud artifacts repositories create bee-brain-pipeline `
+  --repository-format=docker `
+  --location=us-central1 `
   --project=dowd-assistant
 
 gcloud auth configure-docker us-central1-docker.pkg.dev
 ```
 
 Grant the service account permission to execute the job (needed for Cloud Scheduler):
-```bash
-gcloud projects add-iam-policy-binding dowd-assistant \
-  --member="serviceAccount:590600029741-compute@developer.gserviceaccount.com" \
+```powershell
+gcloud projects add-iam-policy-binding dowd-assistant `
+  --member="serviceAccount:590600029741-compute@developer.gserviceaccount.com" `
   --role="roles/run.invoker"
 ```
 
@@ -173,18 +233,18 @@ gcloud run jobs update bee-brain-pipeline --image $image --region us-central1
 ```
 
 To run manually at any time:
-```bash
+```powershell
 gcloud run jobs execute bee-brain-pipeline --region us-central1
 ```
 
 ### Cloud Scheduler trigger
 
-```bash
-gcloud scheduler jobs create http bee-brain-pipeline-schedule \
-  --location=us-central1 \
-  --schedule="0 */4 * * *" \
-  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/dowd-assistant/jobs/bee-brain-pipeline:run" \
-  --message-body="" \
+```powershell
+gcloud scheduler jobs create http bee-brain-pipeline-schedule `
+  --location=us-central1 `
+  --schedule="0 */4 * * *" `
+  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/dowd-assistant/jobs/bee-brain-pipeline:run" `
+  --message-body="" `
   --oauth-service-account-email=590600029741-compute@developer.gserviceaccount.com
 ```
 
@@ -208,12 +268,13 @@ gcloud scheduler jobs create http bee-brain-pipeline-schedule \
 
 Set `PENDING_REVIEW_ONLY=1` to route **all** extractions to pending-review, including high-confidence ones. Useful when you want to audit the pipeline output before trusting it to write directly to Brain pages.
 
-```bash
+```powershell
 # Cloud Run: add to --set-env-vars
-PENDING_REVIEW_ONLY=1
+# PENDING_REVIEW_ONLY=1
 
 # Local dev
-PENDING_REVIEW_ONLY=1 python -m main
+$env:PENDING_REVIEW_ONLY = "1"
+python -m main
 ```
 
 High-confidence facts routed via audit mode are annotated with `**Note**: audit mode — routed to pending-review regardless of confidence.` in the pending-review page so you can distinguish them from genuinely ambiguous ones during triage.
