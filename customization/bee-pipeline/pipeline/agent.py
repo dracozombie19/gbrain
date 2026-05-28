@@ -91,7 +91,8 @@ BRAIN_TOOLS = [
             "Create or update a Brain page. Use for: "
             "(1) memories at memories/YYYY-MM-DD-slug, "
             "(2) action items at tasks/YYYY-MM-DD-slug, "
-            "(3) uncertain entity facts at pending-review/YYYY-MM-DD-{conv_suffix}-N, "
+            "(3) uncertain entity facts — ONE PAGE PER INDIVIDUAL FACT — at "
+            "pending-review/YYYY-MM-DD-{conv_suffix}-N, incrementing N for each fact, "
             "(4) new entity stub pages. "
             "Content must be full markdown with YAML frontmatter."
         ),
@@ -167,7 +168,8 @@ things that will be meaningful to look back on.
    If found and the fact is new, use add_timeline_entry. \
    If the entity doesn't exist and you're confident about the identity, create a stub with put_page \
    then add_timeline_entry. \
-   If you're uncertain who the entity is, write a pending-review page instead.
+   If you're uncertain who the entity is, write a pending-review page instead. \
+   Each uncertain fact gets its own pending-review page — do not bundle multiple facts into one page.
 3. Write memories and action items directly without entity resolution.
 4. After writing memory and task pages, use add_link to connect them to relevant entity pages.
 5. When done, stop. Don't fabricate tool calls or pad with unnecessary writes.
