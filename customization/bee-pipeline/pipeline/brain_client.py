@@ -226,6 +226,12 @@ class BrainClient:
             return result
         return result.get("pages", []) if isinstance(result, dict) else []
 
+    def search(self, query: str, limit: int = 10) -> list[dict]:
+        result = self._call("search", query=query, limit=limit)
+        if isinstance(result, list):
+            return result
+        return result.get("results", []) if isinstance(result, dict) else []
+
 
 class BrainError(Exception):
     def __init__(self, operation: str, error: dict) -> None:
@@ -266,6 +272,11 @@ class DryRunBrainClient:
     def list_pages(self, tag: str | None = None, type: str | None = None, limit: int = 200) -> list[dict]:
         if self._real:
             return self._real.list_pages(tag=tag, type=type, limit=limit)
+        return []
+
+    def search(self, query: str, limit: int = 10) -> list[dict]:
+        if self._real:
+            return self._real.search(query, limit=limit)
         return []
 
     def put_page(self, slug: str, content: str) -> dict:

@@ -35,15 +35,15 @@ def main() -> int:
         return 1
 
     logger.info(
-        "Run complete: fetched=%d processed=%d skipped=%d facts=%d "
-        "timeline=%d memories=%d tasks=%d pending_review=%d bee_facts=%d errors=%d",
+        "Run complete: fetched=%d processed=%d skipped=%d "
+        "timeline=%d memories=%d tasks=%d new_entities=%d pending_review=%d bee_facts=%d errors=%d",
         summary.conversations_fetched,
         summary.conversations_processed,
         summary.conversations_skipped,
-        summary.facts_extracted,
         summary.timeline_entries_written,
         summary.memories_written,
         summary.action_items_written,
+        summary.new_entities_written,
         summary.pending_review_written,
         summary.bee_facts_written,
         len(summary.errors),

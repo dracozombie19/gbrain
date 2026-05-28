@@ -27,9 +27,11 @@ class Config:
     # Vertex AI (Anthropic model) — only used when anthropic_api_key is not set
     vertex_model: str = "claude-sonnet-4-6@20250514"
 
+    # Anthropic model for the agent loop (direct API path)
+    agent_model: str = "claude-sonnet-4-6"
+
     # Pipeline tuning
     max_conversations_per_run: int = 50
-    extraction_max_tokens: int = 8192
 
     # --- Dry-run / local dev options ---
 
@@ -124,6 +126,7 @@ def load_config_from_env() -> Config:
         brain_client_secret=brain_client_secret,
         gcs_bucket=gcs_bucket,
         vertex_model=os.environ.get("VERTEX_MODEL", "claude-sonnet-4-6@20250514"),
+        agent_model=os.environ.get("AGENT_MODEL", "claude-sonnet-4-6"),
         dry_run=dry_run,
         pending_review_only=pending_review_only,
         local_state_path=local_state_path,
