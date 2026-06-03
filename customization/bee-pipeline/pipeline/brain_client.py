@@ -232,6 +232,10 @@ class BrainClient:
             return result
         return result.get("results", []) if isinstance(result, dict) else []
 
+    def put_raw_data(self, slug: str, source: str, data: dict) -> None:
+        """Store arbitrary JSON data against a page slug under a named source."""
+        self._call("put_raw_data", slug=slug, source=source, data=data)
+
 
 class BrainError(Exception):
     def __init__(self, operation: str, error: dict) -> None:
@@ -304,6 +308,9 @@ class DryRunBrainClient:
 
     def add_link(self, from_slug: str, to_slug: str, link_type: str = "mentions") -> None:
         logger.info("[DRY RUN] Would add_link from=%s to=%s link_type=%s", from_slug, to_slug, link_type)
+
+    def put_raw_data(self, slug: str, source: str, data: dict) -> None:
+        logger.info("[DRY RUN] Would put_raw_data slug=%s source=%s keys=%s", slug, source, list(data.keys()))
 
 
 def create_brain_client(config) -> "BrainClient | DryRunBrainClient":

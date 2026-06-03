@@ -105,6 +105,37 @@ class Orchestrator:
         self._state.save(next_cursor, fetched_at, list(self._seen_bee_fact_ids))
         return summary
 
+    def _store_transcript(self, conv: Conversation) -> None:
+        """Archive the raw transcript to Brain as raw data under archive/bee-conversations/.
+
+        A minimal stub page is created first (required by the raw_data FK constraint).
+        The stub lives under archive/ which is in DEFAULT_HARD_EXCLUDES, so it never
+        surfaces in search results.
+        """
+        slug = f"archive/bee-conversations/{conv.id_str}"
+        stub = (
+            f"---\n"
+            f"title: \"Bee Conversation {conv.id_str}\"\n"
+            f"type: note\n"
+            f"tags: [archive, bee-conversation]\n"
+            f"bee_conversation_id: \"{conv.id_str}\"\n"
+            f"bee_conversation_date: \"{conv.date_str}\"\n"
+            f"---\n"
+        )
+        self._brain.put_page(slug, stub)
+        self._brain.put_raw_data(slug, "bee", {
+            "bee_conversation_id": conv.id_str,
+            "date": conv.date_str,
+            "transcript": conv.transcript,
+            "utterances": [
+                {"text": u.text, "speaker": u.speaker, "start_ms": u.start_ms}
+                for u in conv.utterances
+            ],
+            "bee_summary": conv.summary,
+            "bee_short_summary": conv.short_summary,
+        })
+        logger.info("Stored raw transcript for conversation %s at %s", conv.id_str, slug)
+
     def _process_conversation(self, conv: Conversation, summary: RunSummary) -> None:
         if not conv.transcript.strip():
             logger.info("Conversation %s has empty transcript — skipping", conv.id_str)
@@ -112,6 +143,13 @@ class Orchestrator:
             return
 
         logger.info("Processing conversation %s (%s)", conv.id_str, conv.date_str)
+
+        try:
+            self._store_transcript(conv)
+        except Exception as exc:
+            logger.warning("Failed to store transcript for conversation %s: %s", conv.id_str, exc)
+            # Non-fatal — continue with extraction even if archival fails.
+
         try:
             result: AgentResult = self._agent.process(conv)
         except Exception as exc:

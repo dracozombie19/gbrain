@@ -69,6 +69,14 @@ Snippet: [transcript_snippet]
 Conversation date: [bee_conversation_date]
 ```
 
+If more context is needed to make a decision, retrieve the original transcript:
+
+```
+get_raw_data slug=archive/bee-conversations/<bee_conversation_id> source=bee
+```
+
+The result contains the full `transcript`, per-utterance breakdown, and Bee's auto-generated summary.
+
 Ask the user: **Confirm, reassign, discard, or new entity?**
 
 ### Act on the decision
