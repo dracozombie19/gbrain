@@ -177,6 +177,15 @@ class Orchestrator:
             logger.info("Skipping already-processed Bee fact %s", fact.id)
             return
 
+        if not fact.confirmed:
+            # Unconfirmed bee-facts are Bee's lowest-confidence extractions. The
+            # agent already reads the same transcript and extracts more selectively,
+            # so unconfirmed facts add volume without signal. Mark seen to avoid
+            # re-evaluating on every run.
+            logger.info("Skipping unconfirmed Bee fact %s: %r", fact.id, fact.text[:80])
+            self._seen_bee_fact_ids.add(fact.id)
+            return
+
         slug = _bee_fact_slug(fact)
         content = _bee_fact_content(fact)
         try:
